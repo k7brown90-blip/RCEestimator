@@ -181,7 +181,7 @@ hubRouter.get("/hub/threads/:id/messages", withReader(async (req, res, reader) =
 
 // An agent key leaves a DRAFT here (hub:draft). The CRM has no use for this route: a person posts in a
 // conversation's own box, so a session gets a plain 403. The work is src/agentApi/hubDoor.ts, which calls
-// createDraftMessage (customer and job conversations) or postMessageResult (Team and Training) - never hubSend.
+// createDraftMessage (customer conversations, incl. the customerId/jobId links) or postMessageResult (Team, group, job crew chat and Training) - never hubSend.
 hubRouter.post("/hub/messages", withReader(async (req, res, reader) => {
   if (reader.kind !== "agent") {
     res.status(403).json({ error: "Only an AI agent key leaves a draft here. Post in the conversation's own box." });

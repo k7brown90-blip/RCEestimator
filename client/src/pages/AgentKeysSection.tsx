@@ -16,7 +16,10 @@
  *
  * Controls are GREYED with their reason, never hidden: a session without the bot_keys power (and the AI
  * admin) sees every control greyed with the reason; "+ New agent key" says "Set AGENT_KEY_PEPPER in
- * Railway first." when the pepper is missing; "Allow writes" says "Write tools arrive in Phase B".
+ * Railway first." when the pepper is missing. "Allow writes" (per key, Kyle's bot_keys guard) lets that key
+ * leave drafts through POST /hub/messages: ticking it confirms in plain words, unticking does not; it is
+ * greyed with its reason while the kill switch is read-only or off (turning ON only; a key already ticked
+ * can always be unticked), and a revoked key shows it greyed under "Revoked keys".
  *
  * THE SECRET: the create and rotate calls are made from plain handlers, not useMutation, and the key
  * lives only in this component's state while the dialog is open. It is never in the React Query cache
@@ -27,9 +30,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useCan, useSession, useSessionFailed } from "../lib/session";
 import type { AgentAccessMode, AgentKeyPatchInput, AgentKeyView, AgentKeysData } from "../lib/types";
+import { AUTO_SEND_CATEGORIES } from "../../../shared/hub/autoSendCategories";
 import {
   AGENT_KEYS_AI_ADMIN_REASON, AGENT_ROLES, AGENT_ROLE_LABELS, AGENT_SCOPES, AGENT_SCOPE_GROUP,
-  AGENT_WRITES_NOT_YET_REASON, DEFAULT_HUB_THREAD_KINDS_BY_ROLE, DEFAULT_SCOPES_BY_ROLE, HUB_THREAD_KINDS,
+  DEFAULT_HUB_THREAD_KINDS_BY_ROLE, DEFAULT_SCOPES_BY_ROLE, HUB_THREAD_KINDS,
   HUB_THREAD_KIND_KEYS, type AgentRole, type AgentScope, type AgentScopeGroup,
 } from "../../../shared/agentScopes";
 
@@ -40,6 +44,17 @@ const runningMode: AgentAccessMode = "on";
 const RUNNING = { mode: runningMode, changedAt: null, changedBy: null };
 const PEPPER_REASON = "Set AGENT_KEY_PEPPER in Railway first.";
 const ACTIVITY_REASON = "The activity view arrives with the Messages hub.";
+const WRITES_READ_ONLY_REASON = "Agent access is read-only — writes are refused until it is On";
+const WRITES_OFF_REASON = "Agent access is Off";
+const WRITES_REVOKED_REASON = "This key is revoked — it can no longer write";
+// The send types Kyle can switch on under "AI auto-send rules", named by the label that card shows. Read from the one
+// registry view so the two cards cannot drift apart.
+const autoSendLabel = (key: string): string => `"${AUTO_SEND_CATEGORIES.find((c) => c.key === key)?.label ?? key}"`;
+const CUSTOMER_AUTO_SEND_LABELS = AUTO_SEND_CATEGORIES.filter((c) => c.customerFacing).map((c) => `"${c.label}"`).join(" or ");
+const writesConfirmText = (name: string): string =>
+  `Let "${name}" post in Messages? Its posts in Team, group and crew chats wait for your Approve unless ${autoSendLabel("team_internal")} `
+  + `is on; its replies in a Training thread unless ${autoSendLabel("training_reply")} is on; and a message to a customer unless `
+  + `${CUSTOMER_AUTO_SEND_LABELS} is on (under AI auto-send rules). Any of them also needs the server-side auto-send switch.`;
 const GROUPS: Array<{ id: AgentScopeGroup; label: string }> = [
   { id: "read", label: "Read" },
   { id: "draft", label: "Draft (a person approves)" },
@@ -298,8 +313,13 @@ export function AgentKeysSection() {
   }
 
   async function setWrites(k: AgentKeyView, on: boolean) {
-    if (await run(() => api.updateAgentKey(k.id, { writesEnabled: on }))) await refresh();
+    if (on && !window.confirm(writesConfirmText(k.name))) return;
+    if (await run(() => api.updateAgentKey(k.id, { writesEnabled: on }), `"${k.name}" ${on ? "can now post in Messages (what it posts waits for Approve unless an AI auto-send rule is on)" : "can no longer post"}.`)) await refresh();
   }
+
+  // Why "Allow writes" cannot be turned ON right now (null when it can): the kill switch is not On.
+  const writesModeReason: string | null = known && access.mode === "read_only" ? WRITES_READ_ONLY_REASON
+    : known && access.mode === "off" ? WRITES_OFF_REASON : null;
 
   async function setMode(mode: AgentAccessMode, confirmText: string) {
     if (!window.confirm(confirmText)) return;
@@ -433,7 +453,9 @@ export function AgentKeysSection() {
             )}
             {live.map((k) => {
               const chip = hubChip(k.hubThreadKinds);
-              const writesReason = data && !data.writeToolsAvailable ? AGENT_WRITES_NOT_YET_REASON : lockReason;
+              // A greyed box says why. Turning ON waits for the kill switch; a ticked box can always be unticked.
+              const writesReason = lockReason ?? writesModeReason;
+              const writesDisabled = busy || locked || (!k.writesEnabled && writesModeReason !== null);
               // Rotate is always shown; when it can't be used the screen says why (and what to do instead).
               const rotateReason: string | null = k.status === "active" ? null
                 : k.status === "retiring" ? "This key is already being replaced."
@@ -459,7 +481,7 @@ export function AgentKeysSection() {
                       <input
                         type="checkbox"
                         checked={k.writesEnabled}
-                        disabled={busy || locked || !data?.writeToolsAvailable}
+                        disabled={writesDisabled}
                         title={controlTitle(writesReason)}
                         aria-label={`Allow writes for ${k.name}`}
                         onChange={(e) => void setWrites(k, e.target.checked)}
@@ -518,6 +540,10 @@ export function AgentKeysSection() {
               <li key={k.id} className="rounded border border-rce-border px-3 py-2">
                 <span className="font-medium">{k.name}</span> <span className="mono text-xs">{k.displayPrefix}…</span>{" "}
                 — revoked {whenText(k.revokedAt)}{k.revokedReason ? ` (${k.revokedReason})` : ""}
+                <label className="mt-1 flex items-center gap-1 text-xs text-rce-muted">
+                  <input type="checkbox" checked={k.writesEnabled} disabled title={WRITES_REVOKED_REASON} aria-label={`Allow writes for ${k.name}`} />
+                  Allow writes — {WRITES_REVOKED_REASON}
+                </label>
               </li>
             ))}
           </ul>

@@ -27,7 +27,7 @@ export const AGENT_SCOPES = {
   "estimate:draft": "Create estimate drafts (never issue or send)",
   "estimate:propose_accept": "Propose recording a customer's acceptance",
   "notes:write": "Add notes to records",
-  "team:reply": "Read and reply in the Ask-the-team chat",
+  "team:reply": "Read and post in the Team and group chats; post in job crew chats (needs hub:read to read them)",
   "dev:ticket": "File and read dev tickets",
   "inventory:read": "Read price book, stock, purchase orders and receipts",
   "pricebook:propose": "Propose price book additions for approval",
@@ -100,14 +100,6 @@ export const DEFAULT_HUB_THREAD_KINDS_BY_ROLE: Record<AgentRole, readonly string
 /** The reason the Agent keys card gives an AI admin session (and its routes answer it): the card shows, every control is greyed. */
 export const AGENT_KEYS_AI_ADMIN_REASON = "Only Kyle can view or change agent keys.";
 
-/**
- * Whether any agent WRITE tool exists yet. Write tools arrive with the drafts phase (work order
- * Step 4); until then "Allow writes" is greyed on the card and the server refuses to turn it on.
- * Flip this when the first write tool ships.
- */
-export const AGENT_WRITE_TOOLS_AVAILABLE = false;
-export const AGENT_WRITES_NOT_YET_REASON = "Write tools arrive in Phase B";
-
 /** The kinds of hub thread (work order, U1). A key's hubThreadKinds limits it to some of them; empty means no limit. */
 export const HUB_THREAD_KINDS = {
   customer: "Customer",
@@ -131,7 +123,9 @@ export const isHubThreadKind = (v: string): v is HubThreadKind => Object.prototy
  */
 export const HUB_KIND_SCOPES: Record<HubThreadKind, { read: readonly AgentScope[]; post: readonly AgentScope[] }> = {
   customer: { read: ["hub:read"], post: ["hub:draft"] },
-  job: { read: ["hub:read"], post: ["hub:draft"] },
+  // W1b: a job thread is the CREW chat. For an agent a post there is an in-app crew post (the same scope as a Team post,
+  // team:reply), never a draft to the homeowner: a customer message goes in the customer's own conversation (customer or job link).
+  job: { read: ["hub:read"], post: ["team:reply"] },
   team: { read: ["team:reply"], post: ["team:reply"] },
   dev: { read: ["dev:read"], post: [] },
   training: { read: ["training:read", "training:write"], post: ["training:write"] },

@@ -6,7 +6,8 @@
  *
  *   GET  /api/hub/threads                 hub:read   the threads the key may read (filters: kind, status, since; NO search)
  *   GET  /api/hub/threads/:id/messages    hub:read   one thread and its messages (the path the team's contract names)
- *   POST /api/hub/messages                hub:draft  leave a DRAFT (never approved or sent)
+ *   POST /api/hub/messages                hub:draft (customer draft) / team:reply (Team, group, job crew chat): a draft or a message waiting
+ *                                         for approval; an in-app post may then be approved by an AI auto-send rule, a customer message never is
  *
  * Every other hub route (approve, edit-approve, reject, send, audit, stream, attachments, push, thread
  * writes) is refused to an agent key by the session gate (401) and again by `withReader` (403).
@@ -18,8 +19,8 @@
  *   * GROUPS (C7). An office-made group chat is read and posted in as a Team post (team:reply), and ONLY by a key that
  *     is a member of it: a group the key is not in is the same 404 as an unknown id, and is not in its list.
  *   * THREAD KINDS. Which kinds a key may read or draft in comes from its scopes (shared/agentScopes.ts
- *     HUB_KIND_SCOPES: customer and job = hub:read / hub:draft, team = team:reply, dev = dev:read, training =
- *     training:read or training:write), narrowed by its hubThreadKinds (Scout: ['training']). A thread of a kind
+ *     HUB_KIND_SCOPES: customer = hub:read / hub:draft, job (the crew chat) = hub:read to read and team:reply to post,
+ *     team and group = team:reply, dev = dev:read, training = training:read or training:write), narrowed by its hubThreadKinds (Scout: ['training']). A thread of a kind
  *     the key may not use is 403 (not 404), on a read and on a write. An agent never creates a team thread
  *     (team answer 9a) and never a dev thread (step 7): a record link makes a CUSTOMER thread only.
  *   * NO SEARCH. `q` is refused to an agent: a search that matches raw titles and bodies would let a key rebuild a
@@ -42,7 +43,7 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import type { HubThread } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { HubError, ensureThreadFor, memberGroupIds, postMessageResult, type HubReader } from "../services/hub";
+import { HubError, agentPostCategory, ensureThreadFor, memberGroupIds, postMessageResult, type HubReader } from "../services/hub";
 import { LAST_LINE_MAX, listThreads, threadDetail } from "../services/hubInbox";
 import { createDraftMessage } from "../services/hubDrafts";
 import { campaignFirstName } from "../services/emailCampaigns";
@@ -484,8 +485,15 @@ export async function agentCreateMessage(req: Request, res: Response, reader: Hu
 
   const target = await resolveTarget(reader, body);
   const thread = target.thread;
-  const toCustomer = thread.kind === "customer" || thread.kind === "job";
+  // W1b: for an agent a JOB thread is the crew chat (an in-app crew post, like a Team post), never a message to the
+  // homeowner. Only a customer thread takes an email or a text, and a record link (customerId, jobId) resolves to it.
+  const toCustomer = thread.kind === "customer";
   if (thread.kind === "dev") throw forbidden("Dev threads are written through the dev door, not here.");
+  if (thread.kind === "job" && (body.channel === "email" || body.channel === "sms")) {
+    throw badRequest("A customer message goes in the customer's conversation (use customerId or jobId), not the crew chat.");
+  }
+  // The send type of a post in a Team, group, crew or Training conversation is decided by where it goes (the auto-send rule reads it).
+  let postCategory: string | null = null;
 
   let channel: "email" | "sms" | "in_app";
   if (toCustomer) {
@@ -497,6 +505,9 @@ export async function agentCreateMessage(req: Request, res: Response, reader: Hu
     if (body.channel !== undefined && body.channel !== "in_app") throw badRequest("A message in this conversation is in_app.");
     channel = "in_app";
     if (body.tags.length > 0) throw badRequest("The possible_opt_out tag goes on a draft in a customer's conversation only.");
+    const sort = agentPostCategory(thread.kind, body.category);
+    if (!sort.ok) throw badRequest(sort.reason);
+    postCategory = sort.category;
   }
 
   const { idempotency_key: idempotencyKey, ...hashed } = body;
@@ -510,14 +521,14 @@ export async function agentCreateMessage(req: Request, res: Response, reader: Hu
       if (toCustomer) {
         const made = await createDraftMessage(reader, {
           threadId: thread.id, channel: channel as "email" | "sms", body: body.body, subject: body.subject ?? null,
-          category: body.category ?? null, tags: body.tags, status, visitId: target.visitId ?? (thread.kind === "job" ? thread.visitId : null),
+          category: body.category ?? null, tags: body.tags, status, visitId: target.visitId,
           issuedEstimateId: target.issuedEstimateId, clientMessageId,
         });
         message = made.message;
         replayedInside = made.replayed === true;
       } else {
         const made = await postMessageResult(reader, {
-          threadId: thread.id, body: body.body, subject: body.subject ?? null, tags: body.tags, status,
+          threadId: thread.id, body: body.body, subject: body.subject ?? null, tags: body.tags, status, category: postCategory,
           visitId: target.visitId, issuedEstimateId: target.issuedEstimateId, clientMessageId,
         });
         message = made.message;

@@ -3,7 +3,7 @@
  *
  * Pinned: the heading and the Running / Writes paused / All agents off strip with its three confirming
  * buttons (one writer: PUT /owner-settings/agentAccess); the key table (Live/Test chip, prefix, scope
- * and hub chips, Allow writes greyed "Write tools arrive in Phase B", expiry, last used, status);
+ * and hub chips, Allow writes live for Kyle, expiry, last used, status);
  * every control GREYED WITH ITS REASON for a session without bot_keys and for the AI admin; "+ New
  * agent key" greyed "Set AGENT_KEY_PEPPER in Railway first." with no pepper; the Agent dropdown
  * prefilling scopes and thread limits; the show-once dialog, whose secret never enters the React
@@ -35,7 +35,7 @@ const key = (over: Partial<AgentKeyView> = {}): AgentKeyView => ({
 });
 
 const data = (over: Partial<AgentKeysData> = {}): AgentKeysData => ({
-  pepperConfigured: true, environment: "live", writeToolsAvailable: false,
+  pepperConfigured: true, environment: "live",
   agentAccess: access("on"), keys: [key()], ...over,
 });
 
@@ -85,12 +85,15 @@ describe("AgentKeysSection for Kyle", () => {
     expect(screen.queryByRole("button", { name: "Resume agents" })).toBeNull();
   });
 
-  it("Allow writes is greyed with 'Write tools arrive in Phase B', and Activity is greyed with its reason", async () => {
+  // W1 (2026-11-22): the first write tool (POST /hub/messages) shipped, so the old "Write tools arrive in
+  // Phase B" lock is gone; Allow writes is live for Kyle and greyed only with a real reason.
+  it("Allow writes is LIVE for Kyle, and Activity is greyed with its reason", async () => {
     show(data());
     await screen.findByText("Admin Agent");
     const writes = screen.getByLabelText("Allow writes for Admin Agent") as HTMLInputElement;
-    expect(writes.disabled).toBe(true);
-    expect(screen.getByText("Write tools arrive in Phase B")).toBeTruthy();
+    expect(writes.disabled).toBe(false);
+    expect(writes.title).toBe("");
+    expect(screen.queryByText("Write tools arrive in Phase B")).toBeNull();
     const activity = btn("Activity");
     expect(activity.disabled).toBe(true);
     expect(activity.title).toMatch(/Messages hub/);
@@ -120,6 +123,68 @@ describe("AgentKeysSection for Kyle", () => {
     show(data());
     await screen.findByText("Admin Agent");
     expect(screen.queryByRole("button", { name: /delete|remove/i })).toBeNull();
+  });
+});
+
+describe("Allow writes (W1: agent writes switched on)", () => {
+  it("ticking asks a plain confirm naming what it allows; Cancel changes nothing; OK sends writesEnabled true", async () => {
+    const { update } = show(data());
+    await screen.findByText("Admin Agent");
+    const confirm = vi.spyOn(window, "confirm");
+    confirm.mockReturnValueOnce(false);
+    fireEvent.click(screen.getByLabelText("Allow writes for Admin Agent"));
+    expect(confirm).toHaveBeenCalledWith(
+      'Let "Admin Agent" post in Messages? Its posts in Team, group and crew chats wait for your Approve unless "Team post by an AI" '
+      + 'is on; its replies in a Training thread unless "Reply in a Training thread" is on; and a message to a customer unless '
+      + '"Appointment reminder" or "First reply to a new request" is on (under AI auto-send rules). Any of them also needs the server-side auto-send switch.',
+    );
+    expect(update).not.toHaveBeenCalled();
+    confirm.mockReturnValueOnce(true);
+    fireEvent.click(screen.getByLabelText("Allow writes for Admin Agent"));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("k1", { writesEnabled: true }));
+  });
+
+  it("unticking needs no confirm and sends writesEnabled false", async () => {
+    const { update } = show(data({ keys: [key({ writesEnabled: true })] }));
+    await screen.findByText("Admin Agent");
+    const confirm = vi.spyOn(window, "confirm");
+    fireEvent.click(screen.getByLabelText("Allow writes for Admin Agent"));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("k1", { writesEnabled: false }));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("while the kill switch is read-only it is greyed with 'Agent access is read-only — writes are refused until it is On'", async () => {
+    show(data({ agentAccess: access("read_only", "2026-11-21T15:02:00-06:00", "Kyle") }));
+    await screen.findByText("Admin Agent");
+    const writes = screen.getByLabelText("Allow writes for Admin Agent") as HTMLInputElement;
+    expect(writes.disabled).toBe(true);
+    expect(writes.title).toBe("Agent access is read-only — writes are refused until it is On");
+    expect(screen.getByText("Agent access is read-only — writes are refused until it is On")).toBeTruthy();
+  });
+
+  it("while the kill switch is off it is greyed with 'Agent access is Off'", async () => {
+    show(data({ agentAccess: access("off", "2026-11-21T15:02:00-06:00", "Kyle") }));
+    await screen.findByText("Admin Agent");
+    const writes = screen.getByLabelText("Allow writes for Admin Agent") as HTMLInputElement;
+    expect(writes.disabled).toBe(true);
+    expect(writes.title).toBe("Agent access is Off");
+  });
+
+  it("a key already ticked can still be unticked while the kill switch is not On (the safe way out)", async () => {
+    const { update } = show(data({ agentAccess: access("off", null, "Kyle"), keys: [key({ writesEnabled: true })] }));
+    await screen.findByText("Admin Agent");
+    const writes = screen.getByLabelText("Allow writes for Admin Agent") as HTMLInputElement;
+    expect(writes.disabled).toBe(false);
+    fireEvent.click(writes);
+    await waitFor(() => expect(update).toHaveBeenCalledWith("k1", { writesEnabled: false }));
+  });
+
+  it("a revoked key shows Allow writes greyed with its reason under 'Revoked keys', never hidden", async () => {
+    show(data({ keys: [key({ id: "b", name: "Gone one", status: "revoked", writesEnabled: true, revokedAt: "2026-11-20T09:00:00-06:00" })] }));
+    const revoked = await screen.findByTestId("agent-revoked-keys");
+    const writes = within(revoked).getByLabelText("Allow writes for Gone one") as HTMLInputElement;
+    expect(writes.disabled).toBe(true);
+    expect(writes.title).toBe("This key is revoked — it can no longer write");
   });
 });
 

@@ -172,7 +172,7 @@ export async function readerForKey(key: string, db: Db = defaultPrisma): Promise
  *   - owner, a person's CRM login and the AI admin: every thread;
  *   - a technician: a job thread for a visit they are assigned to, their own Team thread, their own
  *     Training thread. Never a customer thread and never a Dev thread (team answer 11b);
- *   - an agent key: only the kinds its scopes open (customer and job: hub:read or hub:draft; team: team:reply;
+ *   - an agent key: only the kinds its scopes open (customer: hub:read or hub:draft; job: hub:read or team:reply (its crew chat); team and group: team:reply;
  *     dev: dev:read; training: training:read or training:write), and of those only the kinds in its hubThreadKinds
  *     when that list is not empty (Scout: training only; Claude Code: dev only).
  */
@@ -702,8 +702,14 @@ export interface PostMessageInput {
    */
   attachmentIds?: readonly string[];
   tags?: readonly string[];
-  /** An agent may post a draft; anything else it posts waits for approval. Ignored for people. */
+  /** An agent may post a draft; anything else it posts waits for approval unless an auto-send rule approves it. Ignored for people. */
   status?: string;
+  /**
+   * The send type of an AGENT's post (shared/hub/messageCategories.ts): `team_internal` in a Team, group or job (crew) conversation,
+   * `training_reply` in a Training one. Left out, an agent's post takes that default; any other type is refused (agentPostCategory).
+   * It is what the auto-send rule looks at. A person's post carries none.
+   */
+  category?: string | null;
   /** The record this message is about, when the thread is not already that record (a tag inside a customer thread). */
   visitId?: string | null;
   issuedEstimateId?: string | null;
@@ -714,6 +720,23 @@ export interface PostMessageInput {
    * The same author posting the same id again gets the message they already made, not a second one.
    */
   clientMessageId?: string | null;
+}
+
+/**
+ * The send type of an agent's in-app post, decided by where it goes (W1b): the ONE rule the agent door and postMessageResult
+ * share. A Team, group or job (crew chat) post is `team_internal`; a Training post is `training_reply`; a Dev post carries none.
+ * A key that names a different type is refused with a plain reason, never silently re-labelled.
+ */
+export function agentPostCategory(
+  threadKind: string, requested: string | null | undefined,
+): { ok: true; category: string | null } | { ok: false; reason: string } {
+  const wanted = threadKind === "training" ? "training_reply" : threadKind === "dev" ? null : "team_internal";
+  if (wanted === null) return requested ? { ok: false, reason: "A post in a Dev conversation carries no send type." } : { ok: true, category: null };
+  if (requested && requested !== wanted) {
+    const label = messageCategoryFor(wanted)?.label ?? wanted;
+    return { ok: false, reason: `A post in this conversation is a "${label}" (category ${wanted}); ${requested} is not a send type it can use.` };
+  }
+  return { ok: true, category: wanted };
 }
 
 export const CLIENT_MESSAGE_ID_MIN = 8;
@@ -730,9 +753,10 @@ export interface PostMessageResult {
  * send, and a send is its own function (U4) so every customer message passes the same checks.
  *
  *   - People (owner, a login, the AI admin, a technician): the message is `posted` at once.
- *   - An agent key: `pending_approval`, or `draft` when it asks for draft. Never posted, never
- *     approved (team answer 3). The one exception is Claude Code in a Dev thread, which is `posted`
- *     as an internal message whatever the body says.
+ *   - An agent key: `pending_approval`, or `draft` when it asks for draft. The agent never posts or approves its own
+ *     message (team answer 3): a pending_approval post is then OFFERED to the auto-send rule (team_internal / training_reply,
+ *     offerToAutoSend), which may approve and post it; a requested draft is never offered. The one exception is Claude Code
+ *     in a Dev thread, which is `posted` as an internal message whatever the body says.
  */
 export async function postMessage(reader: HubReader, input: PostMessageInput, db: PrismaClient = defaultPrisma): Promise<HubMessage> {
   return (await postMessageResult(reader, input, db)).message;
@@ -795,10 +819,17 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
   }
 
   let status: HubMessageStatus = "posted";
+  let category: string | null = null;
+  // The agent asked for a draft: a Training thread turns it into pending_approval (amendment 16b), but it is still a message
+  // the agent said is not ready, so it is NEVER offered to the auto-send rule below (only an Approve posts it).
+  const askedDraft = reader.kind === "agent" && input.status === "draft";
   if (reader.kind === "agent") {
     // A draft to a CUSTOMER is a send, with a channel and a send type; it comes through the draft door
     // (BA3), not through an in-app post. Nothing an agent posts here can reach a customer.
     if (thread.kind === "customer") throw new HubError("Customer drafts go through the draft door, not an in-app post.", 403);
+    const sort = agentPostCategory(thread.kind, input.category);
+    if (!sort.ok) throw new HubError(sort.reason, 400);
+    category = sort.category;
     if (thread.kind === "dev" && reader.agentRole === "claude_code") {
       status = "posted";
     } else if (thread.kind === "training") {
@@ -833,6 +864,10 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
       body,
       subject: input.subject ?? null,
       photoIds,
+      category,
+      // An agent's in-app post is a team reply, whoever decides it: the card registry derives the same kind (kindOfMessage), so the
+      // approval.decided event says "team_reply" whether the rule or a person approved it (hubAutoSend falls back to "customer_message" on null).
+      actionKind: reader.kind === "agent" && thread.kind !== "dev" ? "team_reply" : null,
       tags: input.tags ?? [],
       visitId: input.visitId ?? null,
       issuedEstimateId: input.issuedEstimateId ?? null,
@@ -862,8 +897,36 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
     }
     throw err;
   }
+  // An AI's post that is waiting for approval is offered to the auto-send rule AFTER the write committed (the row is
+  // already in the database: this function never runs inside the caller's transaction) and BEFORE the one fan-out.
+  if (!askedDraft && message.status === "pending_approval" && (message.authorType === "ai_agent" || message.authorType === "claude")) {
+    return { message: await offerToAutoSend(message, thread, input.context ?? null, db), replayed: false };
+  }
   fanOutMessage(message, thread, input.context ?? null);
   return { message, replayed: false };
+}
+
+/**
+ * Offer a fresh AI post to the existing auto-send rule (services/hubAutoSend.ts maybeAutoApprove: unchanged), then announce it ONCE
+ * with the row as it now stands. A post the rule sent is `posted` and hubSend already announced it (settleSent is a fan-out
+ * call site too), so announcing it again would push the team twice; one that stays waiting is announced here as waiting for
+ * Approve; one that failed is announced as it is. The rule can never lose the post: any error leaves it waiting for Approve.
+ * hubAutoSend is imported on demand because it imports this file.
+ */
+async function offerToAutoSend(
+  message: HubMessage, thread: HubThread, context: { kind: string; id: string } | null, db: PrismaClient,
+): Promise<HubMessage> {
+  let fresh: HubMessage = message;
+  try {
+    const { maybeAutoApprove } = await import("./hubAutoSend");
+    await maybeAutoApprove(message.id, db);
+  } catch (err) {
+    logSystemEvent("error", "hub", `The auto-send rule failed on message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    fresh = (await db.hubMessage.findUnique({ where: { id: message.id } })) ?? message;
+    if (fresh.status !== "posted" && fresh.status !== "sent") fanOutMessage(fresh, thread, context);
+  }
+  return fresh;
 }
 
 /**

@@ -140,8 +140,10 @@ describe("GET /settings/agent-keys", () => {
     const made = await create(pin);
     const res = await request(app).get("/settings/agent-keys").set(bearer(pin));
     expect(res.status).toBe(200);
+    // W1 (2026-11-22): the write-tool lock is gone, so the card's data no longer carries writeToolsAvailable.
+    expect(res.body).not.toHaveProperty("writeToolsAvailable");
     expect(res.body).toMatchObject({
-      pepperConfigured: true, environment: "test", writeToolsAvailable: false,
+      pepperConfigured: true, environment: "test",
       agentAccess: { mode: "on", changedAt: null, changedBy: null },
     });
     const row = res.body.keys.find((k: { id: string }) => k.id === made.body.key.id);
@@ -262,12 +264,16 @@ describe("PATCH /settings/agent-keys/:id (edit)", () => {
     expect(clear.body.key.expiresAt).toBeNull();
   });
 
-  it("Allow writes cannot be turned ON while no write tool exists (409 with the reason), and off is fine", async () => {
+  // W1 (2026-11-22): POST /hub/messages is the first write tool, so the old 409 "Write tools arrive in Phase B" is gone.
+  // The full path (draft lands pending_approval, kill switch, non-Kyle, revoked) is in tests/agentWritesSwitchedOn.test.ts.
+  it("Allow writes can be turned ON by Kyle (a new key starts OFF) and OFF again", async () => {
     const pin = await pinToken();
     const made = await create(pin);
+    expect(made.body.key.writesEnabled).toBe(false);
     const on = await request(app).patch(`/settings/agent-keys/${made.body.key.id}`).set(bearer(pin)).send({ writesEnabled: true });
-    expect(on.status).toBe(409);
-    expect(on.body.error).toBe("Write tools arrive in Phase B");
+    expect(on.status).toBe(200);
+    expect(on.body.key.writesEnabled).toBe(true);
+    expect((await prisma.agentKey.findUnique({ where: { id: made.body.key.id } }))?.writesEnabled).toBe(true);
     expect((await request(app).patch(`/settings/agent-keys/${made.body.key.id}`).set(bearer(pin)).send({ writesEnabled: false })).status).toBe(200);
     expect((await prisma.agentKey.findUnique({ where: { id: made.body.key.id } }))?.writesEnabled).toBe(false);
   });

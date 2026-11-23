@@ -34,7 +34,7 @@ import {
   AgentKeyInputError, AgentKeyPepperMissingError, currentAgentEnvironment, mintAgentKey, validateScopes,
 } from "../agentApi/keys";
 import {
-  AGENT_ROLES, AGENT_WRITE_TOOLS_AVAILABLE, AGENT_WRITES_NOT_YET_REASON, HUB_THREAD_KIND_KEYS, isHubThreadKind,
+  AGENT_ROLES, HUB_THREAD_KIND_KEYS, isHubThreadKind,
 } from "../../shared/agentScopes";
 import { toChicagoIso } from "../../shared/calendarDay";
 import { zonedWallToInstant } from "../../shared/businessDays";
@@ -177,7 +177,6 @@ agentKeysRouter.get("/settings/agent-keys", guard, asyncHandler(async (_req, res
   res.json({
     pepperConfigured: Boolean(process.env.AGENT_KEY_PEPPER),
     environment: currentAgentEnvironment(),
-    writeToolsAvailable: AGENT_WRITE_TOOLS_AVAILABLE,
     agentAccess,
     keys: rows.map((r) => toAgentKeyView(r, now)),
   });
@@ -214,10 +213,6 @@ agentKeysRouter.patch("/settings/agent-keys/:id", guard, asyncHandler(async (req
     }
     if (existing.revokedAt) {
       res.status(409).json({ error: "This key is revoked and cannot be edited. Make a new key instead." });
-      return;
-    }
-    if (body.writesEnabled === true && !AGENT_WRITE_TOOLS_AVAILABLE) {
-      res.status(409).json({ error: AGENT_WRITES_NOT_YET_REASON });
       return;
     }
     const data: Prisma.AgentKeyUpdateInput = {};

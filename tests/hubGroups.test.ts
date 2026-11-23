@@ -521,8 +521,9 @@ describe("the agent door: a key sees and posts only in the groups it is a member
     expect(removed.status).toBe(200);
     expect((await request(app).get(`/api/hub/threads/${id}/messages`).set(bearer(bot.key))).status).toBe(404);
     expect(HUB_KIND_SCOPES.group).toEqual({ read: ["team:reply"], post: ["team:reply"] });
-    expect(hubKindsFor(["team:reply"], "post")).toEqual(["team", "group"]);
-    expect(hubKindsFor(["hub:draft"], "post")).toEqual(["customer", "job"]);
+    // W1b: a job thread is the crew chat; an agent posts there with team:reply (an in-app crew post), not hub:draft (a message to the customer).
+    expect(hubKindsFor(["team:reply"], "post")).toEqual(["job", "team", "group"]);
+    expect(hubKindsFor(["hub:draft"], "post")).toEqual(["customer"]);
   });
 
   it("an agent's pending post is approved by the approver and lands in the group; a draft in a CLOSED group cannot be approved (and nothing reopens it)", async () => {

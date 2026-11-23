@@ -2674,7 +2674,6 @@ export type AgentAccessState = { mode: AgentAccessMode; changedAt: string | null
 export type AgentKeysData = {
   pepperConfigured: boolean;
   environment: "live" | "test" | string;
-  writeToolsAvailable: boolean;
   agentAccess: AgentAccessState;
   keys: AgentKeyView[];
 };
