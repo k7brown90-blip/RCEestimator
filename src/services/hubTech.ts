@@ -18,13 +18,14 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import {
-  HubError, ensureTeamThread, findVisibleThread, readerForKey, unreadCounts, visibleThreadWhere, type HubReader,
+  HubError, approverReaderForTechnician, ensureTeamThread, findVisibleThread, unreadCounts, visibleThreadWhere, type HubReader,
 } from "./hub";
 import { listApprovalCards } from "./hubCards";
 import { FIELD_CRM_ONLY_KINDS, FIELD_CRM_ONLY_REASON } from "../../shared/hub/cards";
 import type { ApprovalsResponse } from "../../shared/hub/views";
 import { THREAD_MESSAGE_LIMIT } from "./hubInbox";
 import { stagedPhotos } from "./hubAttachments";
+import { AI_ADMIN_SUB } from "./adminLogin";
 import type { TechBadge, TechMessage, TechThreadDetail, TechThreadRow, TechThreadsResponse } from "../../shared/hub/views";
 
 /** A message a technician may read: said in the app, among the crew, and standing as posted. */
@@ -34,6 +35,28 @@ const AI_AUTHORS = new Set(["ai_agent", "claude"]);
 
 export function techAuthorLabel(authorType: string, name: string): string {
   return AI_AUTHORS.has(authorType) && !/\(AI\)\s*$/.test(name) ? `${name} (AI)` : name;
+}
+
+/**
+ * W2-D: the agent role behind each AI post, for the avatar. ONE query for the whole read (never one per message), selecting the key's
+ * id and role ONLY: an AgentKey row holds its secret hash, so nothing else of it is ever fetched. The AI admin's own CRM session writes
+ * ai_agent posts with no key and authorKey "ai-admin"; those are Admin's words, so "admin" (the rule hubEvents.emitTeamMessageEvents
+ * uses). A person's message, and an approver's edited copy of an agent's draft (authored as the approver, a person), are null: the
+ * avatar says "an AI wrote this", and an edited copy was rewritten and sent by a person. An AI post whose key has since been deleted is
+ * null too, and the bubble falls back to the neutral "AI" avatar by authorType.
+ */
+export async function agentRolesFor(
+  rows: ReadonlyArray<{ authorType: string; authorKey: string | null; authorBotKeyId: string | null }>, db: PrismaClient = defaultPrisma,
+): Promise<(row: { authorType: string; authorKey: string | null; authorBotKeyId: string | null }) => string | null> {
+  const keyIds = [...new Set(rows.flatMap((m) => (AI_AUTHORS.has(m.authorType) && m.authorBotKeyId ? [m.authorBotKeyId] : [])))];
+  const roles = new Map(
+    (keyIds.length === 0 ? [] : await db.agentKey.findMany({ where: { id: { in: keyIds } }, select: { id: true, agentRole: true } })).map((k) => [k.id, k.agentRole]),
+  );
+  return (m) => {
+    if (!AI_AUTHORS.has(m.authorType)) return null;
+    if (m.authorBotKeyId) return roles.get(m.authorBotKeyId) ?? null;
+    return m.authorKey === AI_ADMIN_SUB ? "admin" : null;
+  };
 }
 
 /** The hub reader for a signed-in technician (the route's req.technician). */
@@ -53,10 +76,7 @@ export function techReader(tech: { id: string; name: string }): HubReader {
  * Null for everyone else (a technician with no login, a login without the power, a login that is turned off).
  */
 export async function techApproverReader(technicianId: string, db: PrismaClient = defaultPrisma): Promise<HubReader | null> {
-  const login = await db.crmLogin.findUnique({ where: { technicianId }, select: { id: true } });
-  if (!login) return null;
-  const found = await readerForKey("user:" + login.id, db);
-  return found?.canApprove ? found.reader : null;
+  return approverReaderForTechnician(technicianId, db);
 }
 
 /**
@@ -123,15 +143,16 @@ export async function listTechThreads(reader: HubReader, db: PrismaClient = defa
     db.hubMessage.findMany({
       where: { threadId: { in: ids }, deletedAt: null, ...TECH_MESSAGE_WHERE },
       orderBy: { createdAt: "desc" }, distinct: ["threadId"],
-      select: { threadId: true, authorType: true, authorDisplay: true, body: true, photoIds: true, createdAt: true, sentAt: true, _count: { select: { attachments: true } } },
+      select: { threadId: true, authorType: true, authorKey: true, authorBotKeyId: true, authorDisplay: true, body: true, photoIds: true, createdAt: true, sentAt: true, _count: { select: { attachments: true } } },
     }),
   ]);
   const last = new Map(lastRows.map((m) => [m.threadId, m]));
+  const roleOf = await agentRolesFor(lastRows, db);
   const lastLineOf = (threadId: string): TechThreadRow["lastLine"] => {
     const m = last.get(threadId);
     if (!m) return null;
     const hasPhoto = m.photoIds.length > 0 || m._count.attachments > 0;
-    return { authorLabel: techAuthorLabel(m.authorType, m.authorDisplay), text: m.body ? ellipsis(m.body) : hasPhoto ? "Photo" : "", at: (m.sentAt ?? m.createdAt).toISOString() };
+    return { authorType: m.authorType, agentRole: roleOf(m), authorLabel: techAuthorLabel(m.authorType, m.authorDisplay), text: m.body ? ellipsis(m.body) : hasPhoto ? "Photo" : "", at: (m.sentAt ?? m.createdAt).toISOString() };
   };
 
   const rows: TechThreadRow[] = [];
@@ -165,9 +186,16 @@ export async function listTechThreads(reader: HubReader, db: PrismaClient = defa
   return { threads: rows, unread: rows.reduce((n, r) => n + r.unread, 0) };
 }
 
-/** The home screen's "Messages (n new)": the unread across the same list the Messages screen shows. */
+/**
+ * The home screen's "Messages (n new)" and, for an approver, "n waiting for approval": the unread across the same list the Messages
+ * screen shows, and the length of the SAME card list the "Waiting for approval" screen shows (techApprovals, not a second rule). A
+ * person who may not approve gets 0 and the approvals query never runs for them beyond the one login lookup.
+ */
 export async function techBadge(reader: HubReader, db: PrismaClient = defaultPrisma): Promise<TechBadge> {
-  return { unread: (await listTechThreads(reader, db)).unread };
+  const unread = (await listTechThreads(reader, db)).unread;
+  if (!reader.technicianId) return { unread, waitingApproval: 0 };
+  const { approver, response } = await techApprovals(reader.technicianId, db);
+  return { unread, waitingApproval: approver && response.canApprove ? response.cards.length : 0 };
 }
 
 /**
@@ -207,12 +235,13 @@ export async function techThreadDetail(reader: HubReader, threadId: string, db: 
     (techIds.length === 0 ? [] : await db.technician.findMany({ where: { id: { in: techIds } }, select: { id: true, name: true } })).map((t) => [t.id, t.name]),
   );
 
+  const roleOf = await agentRolesFor(rows, db);
   const messages: TechMessage[] = rows.map((m) => {
     const deleted = m.deletedAt !== null;
     const mine = m.authorKey !== null && m.authorKey === reader.key;
     const name = (m.authorTechnicianId ? names.get(m.authorTechnicianId) : undefined) ?? m.authorDisplay;
     return {
-      id: m.id, authorType: m.authorType, authorLabel: techAuthorLabel(m.authorType, name),
+      id: m.id, authorType: m.authorType, agentRole: roleOf(m), authorLabel: techAuthorLabel(m.authorType, name),
       body: deleted ? null : m.body, deleted, editedAt: m.editedAt ? m.editedAt.toISOString() : null,
       createdAt: m.createdAt.toISOString(), at: (m.sentAt ?? m.createdAt).toISOString(), mine, canEdit: mine && !deleted, canDelete: mine && !deleted,
       attachments: deleted ? [] : m.attachments, photoIds: deleted ? [] : m.photoIds,

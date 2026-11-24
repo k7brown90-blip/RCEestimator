@@ -122,7 +122,7 @@ describe("reading the conversation", () => {
     const rows = await screen.findAllByRole("listitem");
     expect(rows[0]).toHaveTextContent("Deleted by Kyle — Wrong customer");
     expect(rows[1]).toHaveTextContent("RCE Admin (AI)");
-    expect(rows[1]).toHaveTextContent("Needs approval");
+    expect(rows[1]).toHaveTextContent("Waiting for approval");
     expect(rows[1]).toHaveTextContent("Draft: confirming Tuesday.");
     fireEvent.click(within(rows[1]).getByRole("button", { name: "Review draft" }));
     expect(screen.getByTestId("location")).toHaveTextContent("?thread=thread-9");

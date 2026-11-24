@@ -1,7 +1,7 @@
 /**
- * The "Needs approval" queue (work order agent-team, U4/TC3): Messages -> the "Needs approval" chip lists
+ * The "Waiting for approval" queue (work order agent-team, U4/TC3; was "Needs approval" before W2-D): Messages -> the chip lists
  * every draft waiting for a decision as an ApprovalCard, oldest first, with Approve, Edit and Reject on the
- * card itself. Click path from the Dashboard: Messages (left nav) -> "Needs approval (n)" -> "Approve and
+ * card itself. Click path from the Dashboard: Messages (left nav) -> "Waiting for approval (n)" -> "Approve and
  * send" (two clicks, then the "Send this email to ...?" confirm).
  *
  * Someone without the approve_drafts power can read what is waiting; every button is greyed and the power's
@@ -12,6 +12,7 @@ import { useState } from "react";
 import { useHubApprovals } from "../lib/hubQueries";
 import type { HubDecision } from "../lib/types";
 import { sendBlockText } from "../../../shared/hub/sendBlocks";
+import { WAITING_FOR_APPROVAL } from "../../../shared/hub/approvalRules";
 import type { ApprovalCardView } from "../../../shared/hub/views";
 import { ApprovalCard } from "./ApprovalCard";
 
@@ -33,7 +34,7 @@ export function ApprovalQueue() {
   const cards = data?.cards ?? [];
 
   return (
-    <div className="space-y-3" aria-label="Needs approval">
+    <div className="space-y-3" aria-label={WAITING_FOR_APPROVAL}>
       {data && !data.canApprove && (
         <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="approval-queue-lock">
           You can read what is waiting. {data.approveReason}

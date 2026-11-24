@@ -4,13 +4,13 @@
  * informative tools" — this page lists and opens; reading and answering happen in the Thread drawer
  * (`?thread=<id>`), which a click on a row opens.
  *
- *   Chips   All · Customers · Jobs · Team · Groups · Needs approval (n)
+ *   Chips   All · Customers · Jobs · Team · Groups · Waiting for approval (n)
  *   Rows    title, the last line, when, an unread dot, an "AI" chip when the newest message came from an
- *           AI author, and the chip of that message's state (Draft, Needs approval, Sent, Failed, …)
+ *           AI author, and the chip of that message's state (Draft, Waiting for approval, Sent, Failed, …)
  *   Search  the thread's name or anything said in it
  *
- * "Needs approval" lists the drafts themselves, each as the one ApprovalCard with Approve, Edit and Reject on it
- * (U4/TC3), not conversation rows: Messages -> Needs approval -> Approve and send.
+ * "Waiting for approval" (W2-D: was "Needs approval"; the one label is shared/hub/approvalRules.ts) lists the drafts themselves, each as the one ApprovalCard with Approve, Edit and Reject on it
+ * (U4/TC3), not conversation rows: Messages -> Waiting for approval -> Approve and send.
  *
  * There is no "New thread" and no "Delete thread" for a Team thread: it is one per person, made the first
  * time they write (team answer 9a), and a conversation leaves the list by "Close thread" in its drawer.
@@ -33,6 +33,7 @@ import { NotificationsButton } from "../components/NotificationsButton";
 import { NewGroupChatDialog } from "../components/NewGroupChatDialog";
 import { useSession } from "../lib/session";
 import { GROUP_OFFICE_ONLY } from "../../../shared/hub/groups";
+import { WAITING_FOR_APPROVAL, waitingForApprovalLabel } from "../../../shared/hub/approvalRules";
 import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
 import { streamLabel, useHubPollMs, useHubStreamStatus } from "../lib/hubStreamStatus";
@@ -79,7 +80,7 @@ function Row({ thread, onOpen }: { thread: ThreadRow; onOpen: () => void }) {
             {thread.aiLast && <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">AI</span>}
             {thread.pending > 0 && (
               <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
-                Needs approval{thread.pending > 1 ? ` (${thread.pending})` : ""}
+                {thread.pending > 1 ? waitingForApprovalLabel(thread.pending) : WAITING_FOR_APPROVAL}
               </span>
             )}
             {chip && !(thread.pending > 0 && thread.lastLine?.status === "pending_approval") && (
@@ -178,7 +179,7 @@ export function MessagesPage() {
           onClick={() => setChip("approval")}
           className={`rounded-full border px-3 py-1 text-sm font-medium ${chip === "approval" ? "border-rce-accent bg-rce-accent text-white" : waiting > 0 ? "border-amber-400 bg-amber-50 text-amber-900" : "border-rce-border text-rce-soft hover:border-rce-accent"}`}
         >
-          Needs approval ({waiting})
+          {waitingForApprovalLabel(waiting)}
         </button>
       </div>
 

@@ -10,6 +10,15 @@
  */
 import type { ApprovalCardView } from "./views";
 
+/**
+ * The ONE name of "a draft is waiting for a person to decide it", read by both apps (Kyle 2026-11-23 item 6: "waiting for approval"):
+ * the CRM's Messages chip, its per-thread chip and its status chip, and the field app's chip at the top of Messages, its home button
+ * and its screen heading. It replaces the two older wordings ("Needs approval" in both apps) so they cannot drift apart again.
+ */
+export const WAITING_FOR_APPROVAL = "Waiting for approval";
+/** The chip with its count: "Waiting for approval (3)". */
+export const waitingForApprovalLabel = (n: number): string => `${WAITING_FOR_APPROVAL} (${n})`;
+
 /** "Approved — SMS disabled": a text approved while texting is off. It has "Send now" and Reject. */
 export const SMS_HELD_OUTCOME = "Approved — SMS disabled";
 

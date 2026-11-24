@@ -7,7 +7,8 @@
  * why; a device's endpoint must be a real push service over https (the server never calls an address a client
  * chose); the payload has a title, one generic line, a tap URL and a tag - NO customer name, address, phone or
  * message text; a draft waiting for approval goes to the approvers only (Kyle, and a login granted
- * approve_drafts), not to a technician or a plain login; a new message goes to the people who may see its thread
+ * approve_drafts), not to a plain technician or a plain login, and (W2-D) an approver technician's field phone is told too, with a tap that
+ * opens the field's approval list; a new message goes to the people who may see its thread
  * except its author, and a technician's tap opens the field thread; a 404 or 410 from the push service removes
  * the subscription and another failure keeps it with a note; the tech door subscribes and unsubscribes too.
  */
@@ -44,12 +45,12 @@ vi.mock("web-push", () => ({ default: { sendNotification: (...a: unknown[]) => s
 
 import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
-import { saveCrmLogin, setPowers } from "../src/services/crmLogin";
+import { saveCrmLogin, setPowers, setPrincipal } from "../src/services/crmLogin";
 import { ensureTeamThread, ensureThreadFor, postMessage, createMessageRow, type HubReader } from "../src/services/hub";
 import { createDraftMessage } from "../src/services/hubDrafts";
 import { techReader } from "../src/services/hubTech";
 import { isAllowedPushEndpoint, pushConfig, saveSubscription, sendPush, PUSH_NOT_CONFIGURED_REASON } from "../src/services/hubPush";
-import { notifyNewMessage } from "../src/services/hubNotifier";
+import { notifyApprovers, notifyNewMessage } from "../src/services/hubNotifier";
 
 const TAG = "HubPush";
 const techIds: string[] = [];
@@ -209,6 +210,68 @@ describe("a draft waiting for approval", () => {
       const text = JSON.stringify(payload);
       for (const secret of ["Secretcustomer", "Hidden Lane", "6155559876", "Hi Secretcustomer"]) expect(text).not.toContain(secret);
     }
+  });
+});
+
+// W2-D (Kyle 2026-11-23 item 6): "approval pushes reach an approver's field phone and open the approval list". A field phone's
+// subscription is saved as tech:<id>; it counts as an approver's only through the ONE approver rule (the person's linked CRM login is
+// Kyle's principal login or holds approve_drafts). The words carry no text; the tap goes to /field/?approvals=1, never to a customer
+// thread a technician cannot open. A plain technician is never told, and the office's pushes are unchanged.
+describe("a draft waiting for approval, on a field phone (W2-D)", () => {
+  it("reaches an approver technician's field phone with the approvals address and no text, and never a plain technician's", async () => {
+    const eric = await makeTech("Eric");
+    const michael = await makeLogin("Michael", ["approve_drafts"]);
+    const kyle = await makeLogin("KylePerson");
+    await setPrincipal(kyle.loginId);
+    const noPower = await makeLogin("NoPower");
+    const { customer } = await makeJob("FieldDraft", [eric.id]);
+    await subscribe(`tech:${eric.id}`, "eric");
+    await subscribe(`tech:${michael.tech.id}`, "michael-field");
+    await subscribe(`tech:${kyle.tech.id}`, "kyle-field");
+    await subscribe(`tech:${noPower.tech.id}`, "nopower-field");
+    await subscribe("owner", "kyle-desk");
+    await subscribe(`user:${michael.loginId}`, "michael-desk");
+    const thread = await ensureThreadFor({ customerId: customer.id });
+
+    await createDraftMessage(agent, { threadId: thread.id, channel: "email", subject: "Hello", body: "Hi Secretcustomer at 4321 Hidden Lane, call 6155559876", toAddress: "x@example.com" });
+    await settle();
+    const sent = myPayloads();
+    expect(sent.map((s) => s.endpoint).sort()).toEqual(
+      [endpoint("michael-field"), endpoint("kyle-field"), endpoint("kyle-desk"), endpoint("michael-desk")].sort(),
+    );
+    for (const { endpoint: e, payload } of sent) {
+      expect(Object.keys(payload).sort()).toEqual(["body", "tag", "title", "url"]);
+      expect(payload.body).toBe("1 message needs approval");
+      const field = e === endpoint("michael-field") || e === endpoint("kyle-field");
+      // The field phone opens its own approval list; the desk opens the conversation, exactly as before.
+      expect(payload.url).toBe(field ? "/field/?approvals=1" : `/messages?thread=${thread.id}`);
+      if (field) expect(payload.url).not.toContain(thread.id);
+      const text = JSON.stringify(payload);
+      for (const secret of ["Secretcustomer", "Hidden Lane", "6155559876", "Hi Secretcustomer", "token"]) expect(text).not.toContain(secret);
+    }
+  });
+
+  it("the re-notify reaches an approver's field phone with the same address, and not a plain technician's", async () => {
+    const eric = await makeTech("Eric");
+    const michael = await makeLogin("Michael", ["approve_drafts"]);
+    await subscribe(`tech:${eric.id}`, "eric");
+    await subscribe(`tech:${michael.tech.id}`, "michael-field");
+    const sent = await notifyApprovers(2, "some-customer-thread");
+    expect(sent).toBe(1);
+    expect(myPayloads()).toEqual([
+      { endpoint: endpoint("michael-field"), payload: { title: "Red Cedar Messages", body: "2 messages need approval", url: "/field/?approvals=1", tag: "approvals" } },
+    ]);
+  });
+
+  it("a technician whose login is turned off, or who has gone inactive, is not told", async () => {
+    const off = await makeLogin("Off", ["approve_drafts"]);
+    const gone = await makeLogin("Gone", ["approve_drafts"]);
+    await prisma.crmLogin.update({ where: { id: off.loginId }, data: { enabled: false } });
+    await prisma.technician.update({ where: { id: gone.tech.id }, data: { isActive: false } });
+    await subscribe(`tech:${off.tech.id}`, "off-field");
+    await subscribe(`tech:${gone.tech.id}`, "gone-field");
+    expect(await notifyApprovers(1, "some-thread")).toBe(0);
+    expect(myEndpoints()).toEqual([]);
   });
 });
 

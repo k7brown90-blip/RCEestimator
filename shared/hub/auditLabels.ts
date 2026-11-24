@@ -26,6 +26,14 @@ export const HUB_AUDIT_ACTION_LABELS: Record<string, string> = {
   group_member_added: "Member added to a group",
   group_member_removed: "Member removed from a group",
   group_deleted: "Group chat deleted",
+  // W2-E: the Claude Code ("@Coding") runs.
+  coding_requested: "Claude Code asked to change the app",
+  coding_refused: "Claude Code request refused",
+  coding_dispatched: "Claude Code started on GitHub",
+  coding_dispatch_failed: "Claude Code could not be started",
+  coding_replied: "Claude Code answered",
+  coding_cancelled: "Claude Code request cancelled",
+  coding_timed_out: "Claude Code did not answer in an hour",
 };
 
 export const hubAuditActionLabel = (action: string): string => HUB_AUDIT_ACTION_LABELS[action] ?? action;

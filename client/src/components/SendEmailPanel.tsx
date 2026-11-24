@@ -279,7 +279,7 @@ export function SendEmailPanel({
 
   const finish = () => {
     void queryClient.invalidateQueries({ queryKey: ["email-deliveries"] });
-    // The record's Conversation timeline lists this email too, and a draft shows in Messages -> Needs approval.
+    // The record's Conversation timeline lists this email too, and a draft shows in Messages -> Waiting for approval.
     refreshHub(queryClient);
     for (const key of REFRESH_KEYS) void queryClient.invalidateQueries({ queryKey: key });
     record?.onSent?.();
@@ -309,7 +309,7 @@ export function SendEmailPanel({
         const everyone = message.cc && message.cc.length > 0 ? `${message.to}, cc ${message.cc.join(", ")}` : message.to;
         setNotice(
           message.drafted
-            ? `Left for Kyle's approval. It goes to ${everyone} once he approves it, from Messages → Needs approval.`
+            ? `Left for Kyle's approval. It goes to ${everyone} once he approves it, from Messages → Waiting for approval.`
             : message.suppressed
             ? `Sent to ${everyone}. Note: this address unsubscribed from marketing email — this was a direct reply, not a campaign send.`
             : `Sent to ${everyone}.`,

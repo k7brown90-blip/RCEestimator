@@ -48,8 +48,9 @@
 import { createHash } from "node:crypto";
 import type { Request, Response } from "express";
 import { z } from "zod";
-import type { HubThread } from "@prisma/client";
+import type { HubThread, Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import { withKeyedMutex } from "../lib/keyedMutex";
 import { HubError, agentPostCategory, ensureThreadFor, memberGroupIds, postMessageResult, type HubReader } from "../services/hub";
 import { LAST_LINE_MAX, listThreads, threadDetail } from "../services/hubInbox";
 import { createDraftMessage } from "../services/hubDrafts";
@@ -494,16 +495,38 @@ const linkId = z.string().trim().min(1).max(64);
 export const THREAD_AGENT_POST_LIMIT = 8;
 export const THREAD_AGENT_WINDOW_MS = 10 * 60 * 1000;
 const AI_MESSAGE_STATES = ["posted", "sent", "approved", "approving", "pending_approval"];
+/** How long a post waits on another process's hold of the thread's database lock before it is answered retryable instead of left hanging. */
+export const THREAD_LOCK_TIMEOUT_MS = 5000;
 
-async function refuseAgentLoop(threadId: string, now: Date = new Date()): Promise<void> {
-  const lastPerson = await prisma.hubMessage.findFirst({
+/**
+ * Take the thread's advisory lock on this transaction, bounded by lock_timeout. If another process (another replica) holds it past
+ * THREAD_LOCK_TIMEOUT_MS the post is refused `rate_limited` (429, retryable, retry_after 2) rather than hung inside a connection.
+ * lock_timeout is put back to 0 once the lock is ours so it cannot cut short the later statements of this transaction.
+ */
+async function lockThreadForPost(tx: Prisma.TransactionClient, threadId: string): Promise<void> {
+  try {
+    await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = ${Math.floor(THREAD_LOCK_TIMEOUT_MS)}`);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${threadId}))`;
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout = 0");
+  } catch (err) {
+    const text = `${(err as { message?: string })?.message ?? ""} ${JSON.stringify((err as { meta?: unknown })?.meta ?? {})}`;
+    if (text.includes("55P03") || /lock timeout|lock_not_available/i.test(text)) {
+      throw new AgentApiError("rate_limited", { reason: "This conversation is busy with another post. Retry shortly.", retryAfterSeconds: 2 });
+    }
+    throw err;
+  }
+}
+
+/** `db` is the lock holder's own transaction when there is one: the count then runs on the connection that already holds the thread lock, never a second pooled one. */
+async function refuseAgentLoop(threadId: string, db: Pick<PrismaClient, "hubMessage"> = prisma, now: Date = new Date()): Promise<void> {
+  const lastPerson = await db.hubMessage.findFirst({
     where: { threadId, authorType: { in: ["tech", "office"] }, deletedAt: null },
     orderBy: { createdAt: "desc" },
     select: { createdAt: true },
   });
   const windowStart = new Date(now.getTime() - THREAD_AGENT_WINDOW_MS);
   const since = lastPerson && lastPerson.createdAt > windowStart ? lastPerson.createdAt : windowStart;
-  const posts = await prisma.hubMessage.count({
+  const posts = await db.hubMessage.count({
     where: { threadId, authorType: { in: ["ai_agent", "claude"] }, deletedAt: null, status: { in: AI_MESSAGE_STATES }, createdAt: { gt: since } },
   });
   if (posts >= THREAD_AGENT_POST_LIMIT) throw new AgentApiError("thread_agent_limit");
@@ -655,7 +678,7 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
     if (wait !== null) throw new AgentApiError("daily_draft_limit", { retryAfterSeconds: wait });
   }
 
-  const out = await withIdempotency(
+  const runIdempotent = () => withIdempotency(
     { keyId: principal.keyId, role: principal.role }, DRAFT_OPERATION, idempotencyKey, hashed,
     async (tx) => {
       let message;
@@ -663,10 +686,13 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
       let heldBecause: string | null | undefined;
       // A retry that already made its post is answered from what it made (below); only a NEW post is counted against the loop limit.
       // W2: the check and the insert are not one step, so concurrent posts (every agent answering one person's post at once) would all read the same count.
-      // One transaction-scoped advisory lock per thread, held until this transaction commits, makes the next waiter count AFTER this post has committed.
+      // Two layers make them one step. In this process, the posts to one thread wait their turn BEFORE any transaction opens (withKeyedMutex, below),
+      // so a waiter holds no database connection and a burst larger than the pool cannot starve it. Across replicas, the transaction-scoped advisory
+      // lock (bounded by lock_timeout) makes the next poster count AFTER this post has committed. The count runs on this transaction's own
+      // connection, so the holder needs no second pooled connection for it.
       if (!toCustomer) {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${thread.id}))`;
-        await refuseAgentLoop(thread.id);
+        await lockThreadForPost(tx, thread.id);
+        await refuseAgentLoop(thread.id, tx);
       }
       if (toCustomer) {
         const made = await createDraftMessage(reader, {
@@ -702,6 +728,8 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
       return answer.data;
     },
   );
+  // A post to a Team, group or crew thread takes its turn in this process before it opens a transaction; a customer draft has no loop count to protect.
+  const out = toCustomer ? await runIdempotent() : await withKeyedMutex(`agent-thread-post:${thread.id}`, runIdempotent);
 
   const ids = out.replayed ? [] : [(out.result as { messageId?: string }).messageId, thread.id].filter((v): v is string => typeof v === "string");
   if (out.replayed) return { status: 200, body: out.result, recordIds: [], replayed: true, idempotencyKey };

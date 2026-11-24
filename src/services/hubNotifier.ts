@@ -11,7 +11,9 @@
  *
  * The words carry no customer name, address or phone and no message text, only the kind of thread. A tap
  * opens the thread: /messages?thread=<id> in the CRM, /field/?thread=<id> in the field app. A thread id is
- * not a credential (every route still checks who is asking).
+ * not a credential (every route still checks who is asking). The exception is an approval push to a TECHNICIAN
+ * (W2-D, Kyle 2026-11-23 item 6): the draft waits on a customer thread a technician cannot open, so the tap opens
+ * the field app's "Waiting for approval" list (/field/?approvals=1) instead.
  *
  * Nothing here can fail a write: with notifications unset it returns at once without touching the
  * database, and every other failure is swallowed (hubPush logs it).
@@ -27,6 +29,12 @@ const TITLE = "Red Cedar Messages";
 export function urlFor(reader: Pick<HubReader, "kind">, threadId: string): string {
   const id = encodeURIComponent(threadId);
   return reader.kind === "tech" ? `/field/?thread=${id}` : `/messages?thread=${id}`;
+}
+
+/** Where a tap on an APPROVAL notification goes: the office opens the conversation, a technician's phone opens its approval list. */
+export const FIELD_APPROVALS_URL = "/field/?approvals=1";
+export function approvalUrlFor(reader: Pick<HubReader, "kind">, threadId: string): string {
+  return reader.kind === "tech" ? FIELD_APPROVALS_URL : urlFor(reader, threadId);
 }
 
 const WHERE: Record<string, string> = {
@@ -48,13 +56,22 @@ function payloadFor(reader: Pick<HubReader, "kind">, threadId: string, body: str
   return { title: TITLE, body, url: urlFor(reader, threadId), tag };
 }
 
+/** The "n messages need approval" push: same words for everyone, a different tap target per app (approvalUrlFor). */
+function approvalPayloadFor(reader: Pick<HubReader, "kind">, threadId: string, count: number, tag: string): PushPayload {
+  return { title: TITLE, body: approvalBody(count), url: approvalUrlFor(reader, threadId), tag };
+}
+
 /** Every reader key that has a device subscribed, once each. */
 async function subscribedKeys(db: PrismaClient): Promise<string[]> {
   const rows = await db.hubPushSubscription.findMany({ select: { readerKey: true }, distinct: ["readerKey"] });
   return rows.map((r) => r.readerKey);
 }
 
-/** The subscribed people who may approve what the agents draft. */
+/**
+ * The subscribed people who may approve what the agents draft. A field phone counts: its subscription is saved as tech:<id> and
+ * readerForKey resolves that through the ONE approver rule (hub.approverReaderForTechnician), so Kyle's and an approver's field phone
+ * is told, and a plain technician's never is.
+ */
 export async function approverKeys(db: PrismaClient = defaultPrisma): Promise<Array<{ key: string; reader: HubReader }>> {
   const out: Array<{ key: string; reader: HubReader }> = [];
   for (const key of await subscribedKeys(db)) {
@@ -69,7 +86,7 @@ export async function notifyApprovers(count: number, threadId: string, db: Prism
   try {
     if (!pushConfig().configured || count <= 0) return 0;
     const sends: PushSend[] = (await approverKeys(db)).map(({ key, reader }) => ({
-      readerKey: key, payload: payloadFor(reader, threadId, approvalBody(count), "approvals"),
+      readerKey: key, payload: approvalPayloadFor(reader, threadId, count, "approvals"),
     }));
     return await sendPush(sends, db);
   } catch {
@@ -86,7 +103,7 @@ export async function notifyNewMessage(message: HubMessage, thread: HubThread, d
 
     if (message.status === "pending_approval") {
       const sends: PushSend[] = (await approverKeys(db)).map(({ key, reader }) => ({
-        readerKey: key, payload: payloadFor(reader, thread.id, approvalBody(1), `approval:${message.id}`),
+        readerKey: key, payload: approvalPayloadFor(reader, thread.id, 1, `approval:${message.id}`),
       }));
       await sendPush(sends, db);
       return;

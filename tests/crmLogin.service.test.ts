@@ -25,9 +25,10 @@ async function makeLogin(username = "michael", role = "owner", password: string 
 }
 
 describe("shared power list", () => {
-  it("has the eight Kyle-only powers, each with a label and a 403 reason", () => {
+  // W2-E (Kyle 2026-11-23 item 7) added a ninth power, coding_requests ("Ask Claude Code to change the app"): the list was eight before.
+  it("has the nine Kyle-only powers, each with a label and a 403 reason", () => {
     expect([...CRM_POWER_KEYS].sort()).toEqual([
-      "approve_drafts", "bot_keys", "level_gates", "lle_verify", "price_book_edit", "training_publish", "treasury", "van_clearance",
+      "approve_drafts", "bot_keys", "coding_requests", "level_gates", "lle_verify", "price_book_edit", "training_publish", "treasury", "van_clearance",
     ]);
     for (const key of CRM_POWER_KEYS) {
       expect(CRM_POWERS[key].label.length).toBeGreaterThan(3);

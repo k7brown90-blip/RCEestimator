@@ -4,6 +4,7 @@
  * the Thread drawer cannot name the same thing two ways.
  */
 import type { HubMessageStatus } from "../../../shared/hub/model";
+import { WAITING_FOR_APPROVAL } from "../../../shared/hub/approvalRules";
 
 export interface StatusChip {
   label: string;
@@ -24,7 +25,7 @@ const RED = "bg-red-100 text-red-800";
  */
 export const MESSAGE_STATUS_CHIPS: Partial<Record<HubMessageStatus, StatusChip>> = {
   draft: { label: "Draft", tone: GREY, title: "A draft that is not ready for approval yet." },
-  pending_approval: { label: "Needs approval", tone: AMBER, title: "Waiting for someone with approval to send, edit or reject it." },
+  pending_approval: { label: WAITING_FOR_APPROVAL, tone: AMBER, title: "Waiting for someone with approval to send, edit or reject it." },
   approving: { label: "Sending", tone: AMBER, title: "Approved, and going out now." },
   approved: { label: "Approved", tone: GREEN, title: "Approved; it goes out as soon as it is allowed to." },
   sent: { label: "Sent", tone: GREEN, title: "Sent to the customer." },

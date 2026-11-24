@@ -47,7 +47,7 @@ import { prisma } from "../src/lib/prisma";
 import { hashPin } from "../src/middleware/pinAuth";
 import { mintAgentKey } from "../src/agentApi/keys";
 import { AGENT_DAILY_DRAFT_LIMIT } from "../src/agentApi/audit";
-import { THREAD_AGENT_POST_LIMIT } from "../src/agentApi/hubDoor";
+import { THREAD_AGENT_POST_LIMIT, THREAD_LOCK_TIMEOUT_MS } from "../src/agentApi/hubDoor";
 import { getHubAutoSend } from "../src/services/hubAutoSend";
 import { ensureThreadFor } from "../src/services/hub";
 import {
@@ -346,6 +346,51 @@ describe("review fix: the agent-to-agent count is serialized per thread (concurr
     });
     expect(aiSince).toBe(THREAD_AGENT_POST_LIMIT);
   });
+
+  // The hung-pool defect (CI, connection_limit 5): every waiter used to sit in its own transaction, holding a pooled connection, blocked on
+  // the thread's advisory lock, while the lock holder needed another connection to finish. More simultaneous posts than the pool is what
+  // exhausted it. Run this file with `?connection_limit=5` on the database URL (CI does) for it to prove anything about the pool.
+  it("12 simultaneous posts (more than the pool's 5 connections) all answer: exactly 8 publish, 4 are refused thread_agent_limit, none hangs", async () => {
+    const k = await keyFor("admin");
+    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => teamPost(k.secret, `Burst ${i + 1}.`)));
+    const codes = results.map((r) => r.status);
+    expect(codes.filter((c) => c === 201).length, JSON.stringify(results.map((r) => r.body))).toBe(THREAD_AGENT_POST_LIMIT);
+    expect(codes.filter((c) => c === 429).length).toBe(12 - THREAD_AGENT_POST_LIMIT);
+    for (const r of results.filter((x) => x.status === 429)) expect(r.body.code).toBe("thread_agent_limit");
+    const aiSince = await prisma.hubMessage.count({
+      where: { threadId: teamThreadId, authorType: { in: ["ai_agent", "claude"] }, createdAt: { gt: new Date(Date.now() - 10 * 60 * 1000) } },
+    });
+    expect(aiSince).toBe(THREAD_AGENT_POST_LIMIT);
+  });
+
+  it("a post that cannot get the thread's database lock (another process holds it) is refused rate_limited, retryable, instead of hanging", async () => {
+    const k = await keyFor("admin");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    // Stands in for another replica: its own transaction holds the same advisory lock the door takes.
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${teamThreadId}))`;
+      locked();
+      await held;
+    }, { timeout: 60_000 });
+    await lockTaken;
+    try {
+      const started = Date.now();
+      const res = await teamPost(k.secret);
+      expect(res.status, JSON.stringify(res.body)).toBe(429);
+      expect(res.body.code).toBe("rate_limited");
+      expect(res.body.retryable).toBe(true);
+      expect(res.body.retry_after).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(THREAD_LOCK_TIMEOUT_MS - 500);
+    } finally {
+      release();
+      await holder;
+    }
+    // The refusal left nothing behind: the key is free, so the same request goes through once the lock is free.
+    expect((await teamPost(k.secret)).status).toBe(201);
+  }, THREAD_LOCK_TIMEOUT_MS + 10_000);
 });
 
 // ── the publish rule ──────────────────────────────────────────────────────────────────────────────

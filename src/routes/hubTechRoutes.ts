@@ -7,7 +7,7 @@
  * office and the field share ONE message writer.
  *
  *   GET    /health-record/hub/threads                    the Messages list (Team, Training, one row per job)
- *   GET    /health-record/hub/badge                      { unread } for the home screen's "Messages (n new)"
+ *   GET    /health-record/hub/badge                      { unread, waitingApproval } for the home screen's "Messages (n new) · n waiting for approval"
  *   POST   /health-record/hub/job/:visitId/thread        open (or make) the crew thread of a job you are on
  *   GET    /health-record/hub/threads/:id/messages       one thread with its readable messages
  *   POST   /health-record/hub/threads/:id/messages       { body, photoIds?, attachmentIds? }  Send
@@ -18,7 +18,7 @@
  *   DELETE /health-record/hub/attachments/:id            take back a photo you added and did not send
  *   GET    /health-record/hub/attachments/:id            the picture, with your bearer (never a token in a URL)
  *   GET    /health-record/hub/stream                     live updates (U6): text/event-stream, ids only
- *   GET    /health-record/hub/approvals                  the field's "Needs approval (n)": the CRM's cards, for an approver only (U10)
+ *   GET    /health-record/hub/approvals                  the field's "Waiting for approval (n)": the CRM's cards, for an approver only (U10)
  *   POST   /health-record/hub/messages/:id/approve       Approve and send / Send now        (approver only)
  *   POST   /health-record/hub/messages/:id/edit-approve  { body, subject?, to?, cc? }  Send my version  (approver only)
  *   POST   /health-record/hub/messages/:id/reject        { reason }                     Reject draft  (approver only)

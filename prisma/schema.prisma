@@ -4187,6 +4187,8 @@ model HubThread {
   attachments   HubAttachment[]
   /// Only a `group` thread has members (work order agent-team, C7).
   members       HubThreadMember[]
+  /// The "@Coding" runs asked for in this conversation (W2-E, one open at a time).
+  codingRuns    CodingRun[]
 
   @@unique([kind, customerId])
   @@unique([kind, leadId])
@@ -4269,6 +4271,8 @@ model HubMessage {
   /// person's in-app post; Postgres lets any number of nulls share the unique key.
   clientMessageId    String?
   attachments        HubAttachment[]
+  /// The Claude Code run this message asked for, when it was an "@Coding" request (W2-E): at most one, by the unique key on CodingRun.
+  codingRun          CodingRun?
 
   @@unique([authorKey, clientMessageId])
   @@index([threadId, createdAt])
@@ -4332,6 +4336,40 @@ model HubAuditLog {
   @@index([threadId, at])
   @@index([actorKey, at])
   @@index([entityType, entityId])
+}
+
+/// One "@Coding" request: a person's message in a Team, group or crew chat that asked Claude Code to change the app (W2-E, Kyle
+/// 2026-11-23 item 7). ONE row per triggering message (`triggerMessageId` is unique, so a replay is a no-op); it is the run's whole
+/// story, because HubAuditLog is append-only and cannot hold a status. `status`: requested (made, not yet sent to GitHub) | refused (nothing
+/// was sent; `refusedReason` says why in fixed words: not_allowed, no_coding_key, not_a_member, already_running) | dispatched (GitHub
+/// answered 204; the workflow is running) | dispatch_failed (GitHub or the network refused; `githubStatus` is the HTTP status only, NEVER a
+/// body) | replied (Coding posted in the thread) | cancelled ("@Coding cancel") | timed_out (no answer in 60 minutes). "Open" means
+/// requested or dispatched; one open run per thread is enforced in services/hubCoding.ts inside a transaction under
+/// pg_advisory_xact_lock, NOT by a partial unique index (see CrmLogin: a hand-written index shows up as drift in every later migrate diff).
+/// `requestedByKey` is the author's reader key (owner, user:<id>, tech:<id>); `requestedByDisplay` is their FIRST name as it was then.
+/// `prUrl` and `branch` are read from Coding's reply (only a link to this repository's pull requests is kept). Nothing here is a secret:
+/// no token, no request text, no GitHub response body is ever stored.
+model CodingRun {
+  id                 String     @id @default(cuid())
+  threadId           String
+  thread             HubThread  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  triggerMessageId   String     @unique
+  triggerMessage     HubMessage @relation(fields: [triggerMessageId], references: [id], onDelete: Cascade)
+  requestedByKey     String
+  requestedByDisplay String
+  status             String
+  refusedReason      String?
+  githubStatus       Int?
+  prUrl              String?
+  branch             String?
+  replyMessageId     String?
+  cancelledByKey     String?
+  dispatchedAt       DateTime?
+  finishedAt         DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@index([threadId, status])
 }
 
 /// A photo or file held on a message when there is no job to file it under (a Team-thread photo, an

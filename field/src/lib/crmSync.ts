@@ -2412,8 +2412,8 @@ export async function sendHubMessage(
   return crmRequest(`/hub/threads/${encodeURIComponent(threadId)}/messages`, { method: 'POST', body: JSON.stringify(input) })
 }
 
-// ─── Needs approval (work order agent-team, U10) — only for a person whose CRM login holds approve_drafts ─────
-//    Messages -> "Needs approval (n)". The same cards as the office's Approve queue (routes/hubTechRoutes.ts).
+// ─── Waiting for approval (was "Needs approval" before W2-D; work order agent-team, U10) — only for a person whose CRM login holds approve_drafts ─────
+//    Messages -> "Waiting for approval (n)". The same cards as the office's Approve queue (routes/hubTechRoutes.ts).
 
 export interface HubDecisionResult {
   card: ApprovalCardView

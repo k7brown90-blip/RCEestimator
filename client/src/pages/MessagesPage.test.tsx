@@ -1,7 +1,10 @@
 /**
  * The Messages page (work order agent-team, U3): the chips, the rows with their unread dot, AI chip and
- * state chip, the search box, Show closed threads, and the Needs approval queue. A click on a row opens
+ * state chip, the search box, Show closed threads, and the Waiting for approval queue. A click on a row opens
  * the Thread drawer (?thread=). There is no "New thread" and no "Delete thread".
+ *
+ * Kyle 2026-11-23 item 6 (W2-D): the approval chip and queue read "Waiting for approval" (it was "Needs approval"), the one
+ * label in shared/hub/approvalRules.ts that the field app prints too.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +16,8 @@ import { MessagesPage } from "./MessagesPage";
 import { api } from "../lib/api";
 import { setHubStreamStatus } from "../lib/hubStreamStatus";
 import { AI_ADMIN_SESSION } from "../test/sessions";
+import { WAITING_FOR_APPROVAL } from "../../../shared/hub/approvalRules";
+import { messageStatusChip } from "../lib/hubLabels";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -42,7 +47,7 @@ describe("MessagesPage", () => {
     show();
     const draft = await screen.findByRole("button", { name: /Jane Homeowner/ });
     expect(draft).toHaveTextContent("AI");
-    expect(draft).toHaveTextContent("Needs approval");
+    expect(draft).toHaveTextContent("Waiting for approval");
     expect(draft).toHaveTextContent("RCE Admin (AI): Draft: confirming Tuesday.");
     const crew = screen.getByRole("button", { name: /Bob Builder/ });
     expect(within(crew).getByLabelText("2 unread")).toBeInTheDocument();
@@ -51,10 +56,10 @@ describe("MessagesPage", () => {
     expect(screen.getByRole("button", { name: /Kyle and the AI team/ })).toHaveTextContent("Team");
   });
 
-  it("has the six chips, with the waiting count on Needs approval, and no 'New thread'", async () => {
+  it("has the six chips, with the waiting count on Waiting for approval, and no 'New thread'", async () => {
     show({ needsApproval: 3 });
     await screen.findByRole("button", { name: /Jane Homeowner/ });
-    for (const name of ["All", "Customers", "Jobs", "Team", "Groups", "Needs approval (3)"]) {
+    for (const name of ["All", "Customers", "Jobs", "Team", "Groups", "Waiting for approval (3)"]) {
       expect(screen.getByRole("tab", { name })).toBeInTheDocument();
     }
     expect(screen.queryByRole("button", { name: /new .*thread/i })).not.toBeInTheDocument();
@@ -71,7 +76,7 @@ describe("MessagesPage", () => {
     fireEvent.click(screen.getByLabelText("Show closed threads"));
     await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.objectContaining({ status: "all" })));
     vi.spyOn(api, "hubApprovals").mockResolvedValue(approvalsResponse([approvalCard()]));
-    fireEvent.click(screen.getByRole("tab", { name: "Needs approval (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Waiting for approval (1)" }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith(expect.objectContaining({ needsApproval: true })));
   });
 
@@ -87,16 +92,19 @@ describe("MessagesPage", () => {
     renderWithProviders(<MessagesPage />, { route: "/messages" });
     fireEvent.change(await screen.findByLabelText("Search messages"), { target: { value: "zzz" } });
     expect(await screen.findByText("Nothing matches that search.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Needs approval (0)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Waiting for approval (0)" }));
     expect(await screen.findByText("Nothing is waiting for approval.")).toBeInTheDocument();
   });
 
-  it("Needs approval lists the drafts themselves as cards with Approve, Edit and Reject, not conversation rows", async () => {
+  it("Waiting for approval lists the drafts themselves as cards with Approve, Edit and Reject, not conversation rows", async () => {
     show();
     vi.spyOn(api, "hubApprovals").mockResolvedValue(approvalsResponse([approvalCard()]));
     await screen.findByRole("button", { name: /Jane Homeowner/ });
-    fireEvent.click(screen.getByRole("tab", { name: "Needs approval (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Waiting for approval (1)" }));
     const card = await screen.findByTestId("approval-card");
+    // The queue's own region carries the same shared words (W2-D), and the status chip of a waiting draft says it too.
+    expect(screen.getByLabelText(WAITING_FOR_APPROVAL)).toBeInTheDocument();
+    expect(messageStatusChip("pending_approval")?.label).toBe(WAITING_FOR_APPROVAL);
     expect(within(card).getByRole("button", { name: "Approve and send" })).toBeEnabled();
     expect(within(card).getByRole("button", { name: "Edit" })).toBeEnabled();
     expect(within(card).getByRole("button", { name: "Reject" })).toBeEnabled();
@@ -113,7 +121,7 @@ describe("MessagesPage", () => {
     const reason = "Only Kyle can approve what the agents draft. Kyle can turn this on for you under Team → CRM login.";
     vi.spyOn(api, "hubApprovals").mockResolvedValue(approvalsResponse([approvalCard()], { canApprove: false, approveReason: reason }));
     await screen.findByRole("button", { name: /Jane Homeowner/ });
-    fireEvent.click(screen.getByRole("tab", { name: "Needs approval (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Waiting for approval (1)" }));
     expect(await screen.findByTestId("approval-queue-lock")).toHaveTextContent(reason);
     expect(screen.getByRole("button", { name: "Approve and send" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();

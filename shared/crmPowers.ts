@@ -43,6 +43,12 @@ export const CRM_POWERS = {
     label: "Approve what the agents draft",
     reason: "Only Kyle can approve what the agents draft. Kyle can turn this on for you under Team → CRM login.",
   },
+  // W2-E (Kyle 2026-11-23 item 7): who may wake Claude Code with "@Coding" in a Team, group or crew chat. Kyle always holds it; he grants it to
+  // others here. Decided from the author's stored login (services/hubCoding.ts), never from a name.
+  coding_requests: {
+    label: "Ask Claude Code to change the app",
+    reason: "Only Kyle can ask Claude Code to change the app. Kyle can turn this on for you under Team → CRM login.",
+  },
 } as const;
 
 export type CrmPower = keyof typeof CRM_POWERS;

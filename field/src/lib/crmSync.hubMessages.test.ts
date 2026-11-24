@@ -172,7 +172,7 @@ describe('one id per composed message (C4 carry-over a)', () => {
   })
 })
 
-describe('Needs approval (U10)', () => {
+describe('Waiting for approval (U10; was Needs approval, renamed by Kyle 2026-11-23 item 6)', () => {
   it('reads the drafts and decides them through the technician routes, the bearer in the header and no token in any address', async () => {
     const f = mockFetchOk({ cards: [], canApprove: true, approveReason: null })
     await crmSync.fetchHubApprovals()

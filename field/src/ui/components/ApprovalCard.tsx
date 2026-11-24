@@ -2,7 +2,7 @@
  * The approval card in the field app (work order agent-team, U10): a draft an AI agent wrote, waiting for a
  * person who holds the approve_drafts power to send, edit or reject it, drawn for a phone.
  *
- *   Home -> Messages -> "Needs approval (n)" -> this card
+ *   Home -> Messages -> "Waiting for approval (n)" -> this card (W2-D: was "Needs approval")
  *
  * It is the CRM's card (client/src/components/ApprovalCard.tsx) in the field's clothes, not a second design:
  * what the card SAYS is the server's (the header line, the chip, the "When you approve" lines, "Sends as:"), and what is

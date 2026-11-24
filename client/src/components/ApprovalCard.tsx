@@ -3,7 +3,7 @@
  * person to send, edit or reject it. Every kind of draft draws through this one component, on every screen
  * where a person stands:
  *
- *   Messages -> "Needs approval" chip     the queue (ApprovalQueue)
+ *   Messages -> "Waiting for approval" chip  the queue (ApprovalQueue)
  *   Thread drawer                         an AI draft in a crew, Team or customer conversation
  *   Account / Lead / Job conversation     the same card inline, where the customer's own record is
  *

@@ -10,15 +10,18 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   EDIT_NEEDS_WORDS, EditReason, GROUP_CLOSED_NOTE, MessageBubble, MessageThreadScreen, MessagesScreen, PHOTO_BUTTON, PHOTO_CLOSED_REASON, PHOTO_GROUP_REASON, ThreadRows, UNSENT_TEXT,
-  UnsentRow, heldPhotosToRestore, jobMessagesLabel, messagesButtonLabel, needsApprovalLabel, photoClosedReason, takeBackHeldPhotos,
+  UnsentRow, heldPhotosToRestore, jobMessagesLabel, messagesButtonLabel, approvalChipLabel, photoClosedReason, takeBackHeldPhotos,
 } from './MessagesScreen'
+import { AVATAR_ROLES, agentAvatar } from '../../../../shared/hub/agentAvatar'
+import { WAITING_FOR_APPROVAL, waitingForApprovalLabel } from '../../../../shared/hub/approvalRules'
+import { readMessagesLaunch } from '../../lib/messagesLaunch'
 import type { TechMessage, TechThreadRow } from '../../../../shared/hub/views'
 
 const row = (over: Partial<TechThreadRow> = {}): TechThreadRow => ({
   key: 'team', kind: 'team', threadId: 't-team', title: 'Eric ↔ AI team', visitId: null, unread: 0, lastLine: null, lastMessageAt: null, ...over,
 })
 const message = (over: Partial<TechMessage> = {}): TechMessage => ({
-  id: 'm1', authorType: 'tech', authorLabel: 'Eric', body: 'Panel is open', deleted: false, editedAt: null,
+  id: 'm1', authorType: 'tech', agentRole: null, authorLabel: 'Eric', body: 'Panel is open', deleted: false, editedAt: null,
   createdAt: '2026-11-22T15:00:00.000Z', at: '2026-11-22T15:00:00.000Z', mine: true, canEdit: true, canDelete: true, attachments: [], photoIds: [], ...over,
 })
 
@@ -34,9 +37,17 @@ describe('the buttons', () => {
   it('the photo button says what it does', () => {
     expect(PHOTO_BUTTON).toBe('📷 Add photo')
   })
-  it("an approver's chip at the top of Messages counts what waits", () => {
-    expect(needsApprovalLabel(3)).toBe('Needs approval (3)')
-    expect(needsApprovalLabel(0)).toBe('Needs approval (0)')
+  // Kyle 2026-11-23 item 6: "waiting for approval", the CRM's words (shared/hub/approvalRules.ts), no longer "Needs approval".
+  it("an approver's chip at the top of Messages counts what waits, in the CRM's own words", () => {
+    expect(approvalChipLabel(3)).toBe('Waiting for approval (3)')
+    expect(approvalChipLabel(0)).toBe('Waiting for approval (0)')
+    expect(approvalChipLabel(3)).toBe(waitingForApprovalLabel(3))
+  })
+  it("an approver's home button says how many drafts wait; everyone else's is unchanged (W2-D)", () => {
+    expect(messagesButtonLabel(2, 1)).toBe('💬 Messages (2 new) · 1 waiting for approval')
+    expect(messagesButtonLabel(0, 3)).toBe('💬 Messages · 3 waiting for approval')
+    expect(messagesButtonLabel(2, 0)).toBe('💬 Messages (2 new)')
+    expect(messagesButtonLabel(2)).toBe('💬 Messages (2 new)')
   })
 })
 
@@ -45,14 +56,18 @@ describe('the list', () => {
     const html = renderToStaticMarkup(
       <ThreadRows
         threads={[
-          row({ unread: 1, lastLine: { authorLabel: 'RCE Admin (AI)', text: 'Bring the 200 amp base', at: '2026-11-22T15:00:00.000Z' } }),
+          row({ unread: 1, lastLine: { authorType: 'ai_agent', agentRole: 'admin', authorLabel: 'RCE Admin (AI)', text: 'Bring the 200 amp base', at: '2026-11-22T15:00:00.000Z' } }),
           row({ key: 'job:v1', kind: 'job', threadId: null, title: 'Jane Homeowner — 12 Main St', visitId: 'v1' }),
         ]}
       />,
     )
     expect(html).toContain('Team — you and the AI team')
     expect(html).toContain('1 new')
-    expect(html).toContain('RCE Admin (AI): Bring the 200 amp base')
+    // W2-D: the avatar and the "AI" chip say it is an AI, so the name drops its "(AI)" (said once, not twice).
+    expect(html).toContain('RCE Admin: Bring the 200 amp base')
+    expect(html).not.toContain('(AI):')
+    expect(html).toContain('aria-label="Admin (AI)"')
+    expect(html).toContain('data-testid="ai-chip"')
     expect(html).toContain('Jane Homeowner — 12 Main St')
     expect(html).toContain('Nothing said yet.')
   })
@@ -62,7 +77,7 @@ describe('the list', () => {
       <ThreadRows
         threads={[
           row(),
-          row({ key: 'group:g1', kind: 'group', threadId: 'g1', title: 'Install crew', unread: 2, lastLine: { authorLabel: 'Sam', text: 'Truck is loaded', at: '2026-11-22T15:00:00.000Z' } }),
+          row({ key: 'group:g1', kind: 'group', threadId: 'g1', title: 'Install crew', unread: 2, lastLine: { authorType: 'tech', agentRole: null, authorLabel: 'Sam', text: 'Truck is loaded', at: '2026-11-22T15:00:00.000Z' } }),
           row({ key: 'job:v1', kind: 'job', threadId: null, title: 'Jane Homeowner — 12 Main St', visitId: 'v1' }),
         ]}
       />,
@@ -71,6 +86,8 @@ describe('the list', () => {
     expect(html).toContain('>Group<')
     expect(html).toContain('2 new')
     expect(html).toContain('Sam: Truck is loaded')
+    expect(html).not.toContain('data-agent-avatar')
+    expect(html).not.toContain('data-testid="ai-chip"')
     expect(html.indexOf('Team — you and the AI team')).toBeLessThan(html.indexOf('Install crew'))
     expect(html.indexOf('Install crew')).toBeLessThan(html.indexOf('Jane Homeowner'))
   })
@@ -106,6 +123,77 @@ describe('a message', () => {
     expect(html).toContain('edited')
     expect(html).toContain('data-testid="message-photos"')
     expect(html).not.toContain('whitespace-pre-wrap')
+  })
+})
+
+// ── W2-D: who wrote it ─────────────────────────────────────────────────────────────────────────
+describe("an agent's message (W2-D)", () => {
+  const agentMsg = (role: string | null, type = 'ai_agent', label = 'Sage (AI)') =>
+    message({ authorType: type, agentRole: role, authorLabel: label, mine: false, canEdit: false, canDelete: false })
+
+  it("draws the agent's round avatar, its initials on its role colour, and an AI chip, for every one of the nine roles", () => {
+    for (const role of AVATAR_ROLES) {
+      const a = agentAvatar(role)
+      const html = renderToStaticMarkup(<MessageBubble message={agentMsg(role, role === 'claude_code' ? 'claude' : 'ai_agent')} visitId={null} />)
+      expect(html).toContain(`data-agent-avatar="${role}"`)
+      expect(html).toContain(`aria-label="${a.ariaLabel}"`)
+      expect(html).toContain(`>${a.initials}<`)
+      expect(html).toContain(`background:${a.background}`)
+      expect(html).toContain('data-testid="ai-chip"')
+    }
+  })
+
+  it('says "AI" once: the name drops the "(AI)" the server adds, the chip and the avatar carry it', () => {
+    const html = renderToStaticMarkup(<MessageBubble message={agentMsg('inventory', 'ai_agent', 'Inventory Bot (AI)')} visitId={null} />)
+    expect(html).toContain('Inventory Bot')
+    expect(html).not.toContain('Inventory Bot (AI)')
+    expect(html).toContain('aria-label="Inventory (AI)"')
+  })
+
+  it('an AI post whose key is gone (role unknown) still shows the neutral AI avatar and chip', () => {
+    const html = renderToStaticMarkup(<MessageBubble message={agentMsg(null)} visitId={null} />)
+    expect(html).toContain('data-agent-avatar="other"')
+    expect(html).toContain('aria-label="AI agent (AI)"')
+    expect(html).toContain('data-testid="ai-chip"')
+  })
+
+  it("a person's message has no avatar and no chip, and keeps its own name as it was", () => {
+    for (const m of [message(), message({ authorType: 'office', authorLabel: 'Kyle', mine: false, canEdit: false, canDelete: false })]) {
+      const html = renderToStaticMarkup(<MessageBubble message={m} visitId={null} />)
+      expect(html).not.toContain('data-agent-avatar')
+      expect(html).not.toContain('data-testid="ai-chip"')
+      expect(html).toContain(m.authorLabel)
+    }
+  })
+
+  it("the thread list's last line shows the small avatar and chip for an agent, nothing extra for a person", () => {
+    const agent = renderToStaticMarkup(<ThreadRows threads={[row({ lastLine: { authorType: 'claude', agentRole: 'claude_code', authorLabel: 'Coder (AI)', text: 'PR is up', at: '2026-11-22T15:00:00.000Z' } })]} />)
+    expect(agent).toContain('data-agent-avatar="claude_code"')
+    expect(agent).toContain('data-testid="ai-chip"')
+    expect(agent).toContain('Coder: PR is up')
+    const person = renderToStaticMarkup(<ThreadRows threads={[row({ lastLine: { authorType: 'office', agentRole: null, authorLabel: 'Kyle', text: 'Thanks', at: '2026-11-22T15:00:00.000Z' } })]} />)
+    expect(person).not.toContain('data-agent-avatar')
+    expect(person).toContain('Kyle: Thanks')
+  })
+})
+
+describe('Waiting for approval (W2-D)', () => {
+  it('opening Messages from an approval push lands on the approval list, headed "Waiting for approval"', () => {
+    const html = renderToStaticMarkup(<MessagesScreen onBack={() => undefined} openApprovals />)
+    expect(html).toContain(`>${WAITING_FOR_APPROVAL}<`)
+    expect(html).toContain('← Messages')
+    expect(html).not.toContain('Needs approval')
+  })
+  it('without the push, Messages opens on the list of threads, not the approval list', () => {
+    const html = renderToStaticMarkup(<MessagesScreen onBack={() => undefined} />)
+    expect(html).toContain('← Today')
+  })
+  it("a push tap's address is read once: ?approvals=1 opens the list, ?thread=<id> opens that thread, and both words leave the address", () => {
+    expect(readMessagesLaunch('?approvals=1')).toEqual({ thread: null, approvals: true, rest: '' })
+    expect(readMessagesLaunch('?thread=abc&x=1')).toEqual({ thread: 'abc', approvals: false, rest: 'x=1' })
+    expect(readMessagesLaunch('?approvals=1&y=2')).toEqual({ thread: null, approvals: true, rest: 'y=2' })
+    expect(readMessagesLaunch('?approvals=yes')).toMatchObject({ approvals: false })
+    expect(readMessagesLaunch('')).toEqual({ thread: null, approvals: false, rest: '' })
   })
 })
 

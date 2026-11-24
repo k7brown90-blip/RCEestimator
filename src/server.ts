@@ -424,6 +424,9 @@ async function startServer(): Promise<void> {
       try {
         const { deliverDueEvents } = await import("./services/hubEvents");
         await deliverDueEvents();
+        // W2-E: a Claude Code ("@Coding") run that has been open for 60 minutes is closed, and the thread is told. Ids and fixed words only.
+        const { sweepCodingRuns } = await import("./services/hubCoding");
+        await sweepCodingRuns();
       } catch (err) {
         console.error("[HubEvents] delivery pass failed:", err);
       } finally {

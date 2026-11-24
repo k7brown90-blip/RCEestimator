@@ -183,7 +183,7 @@ describe("SendEmailPanel as the AI admin", () => {
     await waitFor(() => expect(send).toHaveBeenCalledWith({
       target: "lead", id: "lead-1", to: "jane@example.com", subject: "Checking in", body: "Following up.",
     }));
-    expect(await screen.findByText(/Left for Kyle's approval\. It goes to jane@example\.com, cc pm@example\.com once he approves it, from Messages → Needs approval\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Left for Kyle's approval\. It goes to jane@example\.com, cc pm@example\.com once he approves it, from Messages → Waiting for approval\./)).toBeInTheDocument();
     expect(screen.queryByText(/^Sent to/)).not.toBeInTheDocument();
   });
 

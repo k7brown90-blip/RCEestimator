@@ -22,6 +22,7 @@ import { onSignatureSyncSettled, pendingCancellationCount, pendingSignatureCount
 import type { CrmAssignment } from '../../domain/types'
 import { useHubLive } from '../../lib/hubLive'
 import { MessagesScreen, messagesButtonLabel } from './MessagesScreen'
+import { readMessagesLaunch } from '../../lib/messagesLaunch'
 
 /** Production job or estimate visit — the card dresses as what it is (Phase 2). */
 const JOB_STATUSES = new Set(['contracted', 'scheduled', 'in_progress'])
@@ -263,22 +264,24 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
   // screen, so the home screen stays what it is underneath). A notification's tap arrives as /field/?thread=<id>.
   const [showMessages, setShowMessages] = useState(false)
   const [linkedThread, setLinkedThread] = useState<string | null>(null)
+  // A push about drafts arrives as /field/?approvals=1 and opens the "Waiting for approval" list (W2-D).
+  const [linkedApprovals, setLinkedApprovals] = useState(false)
   const [unreadMessages, setUnreadMessages] = useState(0)
+  // How many drafts wait for THIS person (0 unless they are an approver): the home button says so (W2-D).
+  const [waitingApproval, setWaitingApproval] = useState(0)
   const live = useHubLive()
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const thread = params.get('thread')
-    if (!thread) return
-    params.delete('thread')
-    const rest = params.toString()
+    const { thread, approvals, rest } = readMessagesLaunch(window.location.search)
+    if (!thread && !approvals) return
     window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}${window.location.hash}`)
-    setLinkedThread(thread)
+    if (approvals) setLinkedApprovals(true)
+    else setLinkedThread(thread)
     setShowMessages(true)
   }, [])
   useEffect(() => {
     if (!configured) return
     let alive = true
-    fetchHubBadge().then((b) => { if (alive) setUnreadMessages(b.unread) }).catch(() => undefined)
+    fetchHubBadge().then((b) => { if (alive) { setUnreadMessages(b.unread); setWaitingApproval(b.waitingApproval ?? 0) } }).catch(() => undefined)
     return () => { alive = false }
   }, [configured, live.tick, showMessages])
 
@@ -371,7 +374,7 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
   }
 
   if (showMessages) {
-    return <MessagesScreen onBack={() => { setShowMessages(false); setLinkedThread(null) }} openThreadId={linkedThread} />
+    return <MessagesScreen onBack={() => { setShowMessages(false); setLinkedThread(null); setLinkedApprovals(false) }} openThreadId={linkedThread} openApprovals={linkedApprovals} />
   }
 
   return (
@@ -505,7 +508,7 @@ export function AssignmentScreen({ onOpenVisit, onOpenAccounts, onOpenPurchases,
             onClick={() => setShowMessages(true)}
             className="w-full rounded-lg border border-violet-800 bg-slate-800/60 p-3 text-sm font-medium text-violet-200"
           >
-            {messagesButtonLabel(unreadMessages)} — you, the office and the AI team
+            {messagesButtonLabel(unreadMessages, waitingApproval)} — you, the office and the AI team
           </button>
 
           {onOpenAccounts && (

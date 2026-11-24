@@ -361,7 +361,10 @@ export interface TechThreadRow {
   title: string;
   visitId: string | null;
   unread: number;
-  lastLine: { authorLabel: string; text: string; at: string } | null;
+  /**
+   * `authorType` and `agentRole` (W2-D) let the list draw the same small avatar and "AI" chip as the thread: see TechMessage.
+   */
+  lastLine: { authorType: string; agentRole: string | null; authorLabel: string; text: string; at: string } | null;
   lastMessageAt: string | null;
 }
 
@@ -375,6 +378,13 @@ export interface TechMessage {
   id: string;
   /** "tech", "office", "ai_agent", "claude" or "system". */
   authorType: string;
+  /**
+   * W2-D: the role of the AI agent that wrote it ("admin", "inventory", ..., "claude_code", "other"), so the phone can draw the
+   * agent's avatar. Resolved by the server from the key that wrote the post (the role and nothing else of the key); the AI admin's
+   * own CRM session is "admin". Null for a person, for an AI post whose key is gone, and for an approver's edited copy of an agent's
+   * draft (it is the approver's message: their name is on it and they rewrote it).
+   */
+  agentRole: string | null;
   /** The name to show; an AI author already reads "... (AI)". Technician.name for a technician. */
   authorLabel: string;
   /** Null once deleted: the text stays in the audit, not on the screen. */
@@ -402,4 +412,9 @@ export interface TechThreadDetail {
 
 export interface TechBadge {
   unread: number;
+  /**
+   * W2-D: how many drafts wait for THIS person to decide (the same cards as Messages -> "Waiting for approval (n)"). 0 for everyone who
+   * may not approve, so a plain technician's home button never changes.
+   */
+  waitingApproval: number;
 }

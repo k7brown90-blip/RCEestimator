@@ -12,12 +12,16 @@
  *                   "Edit" and "Delete" (Delete leaves "Deleted" where it was; the office keeps the words).
  *   No signal       the message stays on screen as "Not sent, no signal. Tap to retry."
  *
- * Needs approval  only for a person whose CRM login holds the approve_drafts power (Kyle's): "Needs approval (n)" at the top
- *                  of Messages opens the drafts the AI team left, each with "Approve and send", "Edit" ("Send my version")
- *                  and "Reject" ("Why?" then "Reject draft"). Anyone else never sees it.
+ * Waiting for approval  only for a person whose CRM login holds the approve_drafts power (Kyle's): "Waiting for approval (n)" at the
+ *                  top of Messages opens the drafts the AI team left, each with "Approve and send", "Edit" ("Send my version")
+ *                  and "Reject" ("Why?" then "Reject draft"). Anyone else never sees it. (W2-D, Kyle 2026-11-23 item 6: the
+ *                  words are shared/hub/approvalRules.ts, the same ones the CRM prints; it was "Needs approval".) An approver's
+ *                  home button also says "n waiting for approval", and a push about drafts opens this list.
+ * An agent's message carries the agent's round avatar (initials on the role's colour) and an "AI" chip, in the thread and on the
+ * list's last line (W2-D); a person's message carries neither.
  *
  * Click path from home: Messages -> the thread (2 taps). From a job: Job site -> Job messages (1 tap).
- * An approver: Messages -> Needs approval (n) -> the card (2 taps, then the button).
+ * An approver: Messages -> Waiting for approval (n) -> the card (2 taps, then the button); from a push: 1 tap.
  * You see the crew's messages only; a text or email to the customer never shows here. Names only: your own
  * name, the office's, "<name> (AI)".
  */
@@ -46,16 +50,22 @@ import { liveLabel, useHubLive } from '../../lib/hubLive'
 import { NotificationsButton } from '../components/NotificationsButton'
 import { PhotoPicker } from '../components/PurchaseOrderPanel'
 import { ApprovalCard } from '../components/ApprovalCard'
+import { WAITING_FOR_APPROVAL, waitingForApprovalLabel } from '../../../../shared/hub/approvalRules'
+import { agentAvatar, isAiAuthor, plainAuthorName } from '../../../../shared/hub/agentAvatar'
 import type { ApprovalCardView, AttachmentRef, TechMessage, TechThreadDetail, TechThreadRow } from '../../../../shared/hub/views'
 
 // ── words the screens share (and the tests pin) ────────────────────────────────────────────────
 
-/** The home screen's button. */
-export const messagesButtonLabel = (unread: number): string => `💬 Messages${unread > 0 ? ` (${unread} new)` : ''}`
+/**
+ * The home screen's button: "Messages (2 new)", and for an approver "Messages (2 new) · 1 waiting for approval" (W2-D). Everyone else's
+ * is unchanged: `waiting` is 0 for a person who may not approve.
+ */
+export const messagesButtonLabel = (unread: number, waiting = 0): string =>
+  `💬 Messages${unread > 0 ? ` (${unread} new)` : ''}${waiting > 0 ? ` · ${waiting} ${WAITING_FOR_APPROVAL.toLowerCase()}` : ''}`
 /** The Job site's button. */
 export const jobMessagesLabel = (unread: number): string => `💬 Job messages${unread > 0 ? ` (${unread})` : ''}`
-/** The approver's chip at the top of Messages. */
-export const needsApprovalLabel = (n: number): string => `Needs approval (${n})`
+/** The approver's chip at the top of Messages: "Waiting for approval (n)", the CRM's words (shared/hub/approvalRules.ts). */
+export const approvalChipLabel = waitingForApprovalLabel
 export const UNSENT_TEXT = 'Not sent, no signal. Tap to retry.'
 export const PHOTO_BUTTON = '📷 Add photo'
 /** Why "Save changes" is greyed on an empty box (a photo-only message edited down to nothing). */
@@ -69,6 +79,32 @@ export const GROUP_CLOSED_NOTE = 'The office closed this group. You can read it;
 
 const whenText = (iso: string): string =>
   new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+
+// ── who wrote it: the agent's avatar and "AI" chip (W2-D) ────────────────────────────────────────
+
+/**
+ * An agent's round avatar: its initials on its role's colour, "Admin (AI)" for a screen reader. `size` is the circle's pixel width;
+ * the thread's is big enough to read at arm's length in sunlight, the list's is the small one beside a last line.
+ */
+export function AgentAvatarCircle({ role, size }: { role: string | null | undefined; size: number }) {
+  const a = agentAvatar(role)
+  return (
+    <span
+      role="img"
+      aria-label={a.ariaLabel}
+      data-agent-avatar={a.role ?? 'other'}
+      className="inline-flex shrink-0 items-center justify-center rounded-full font-bold leading-none"
+      style={{ width: size, height: size, background: a.background, color: a.foreground, fontSize: Math.round(size * 0.4) }}
+    >
+      {a.initials}
+    </span>
+  )
+}
+
+/** The "AI" chip: the one place a message says an AI wrote it, so the name beside it drops the server's "(AI)". */
+export function AiChip() {
+  return <span data-testid="ai-chip" className="rounded bg-violet-900 px-1.5 py-0.5 text-[11px] font-bold leading-none text-violet-100">AI</span>
+}
 
 // ── the list ────────────────────────────────────────────────────────────────────────────────────
 
@@ -93,7 +129,17 @@ export function ThreadRows({ threads, onOpen }: { threads: TechThreadRow[]; onOp
                 {t.unread > 0 && <span className="shrink-0 text-[11px] font-semibold text-sky-300">{t.unread} new</span>}
               </span>
               {t.lastLine ? (
-                <span className="mt-0.5 block truncate text-xs text-slate-400">{t.lastLine.authorLabel}: {t.lastLine.text}</span>
+                <span className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-400">
+                  {isAiAuthor(t.lastLine.authorType, t.lastLine.agentRole) ? (
+                    <>
+                      <AgentAvatarCircle role={t.lastLine.agentRole} size={20} />
+                      <AiChip />
+                      <span className="min-w-0 truncate">{plainAuthorName(t.lastLine.authorLabel)}: {t.lastLine.text}</span>
+                    </>
+                  ) : (
+                    <span className="min-w-0 truncate">{t.lastLine.authorLabel}: {t.lastLine.text}</span>
+                  )}
+                </span>
               ) : (
                 <span className="mt-0.5 block text-xs text-slate-500">Nothing said yet.</span>
               )}
@@ -105,13 +151,14 @@ export function ThreadRows({ threads, onOpen }: { threads: TechThreadRow[]; onOp
   )
 }
 
-export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; openThreadId?: string | null }) {
+export function MessagesScreen({ onBack, openThreadId, openApprovals }: { onBack: () => void; openThreadId?: string | null; openApprovals?: boolean }) {
   const live = useHubLive()
   const [threads, setThreads] = useState<TechThreadRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   // How many drafts wait for THIS person to decide; null for everyone who may not (they never see the chip).
   const [approvals, setApprovals] = useState<number | null>(null)
-  const [approving, setApproving] = useState(false)
+  // A push about drafts opens the approval list itself (/field/?approvals=1), not a thread this person may not be able to open.
+  const [approving, setApproving] = useState(openApprovals === true)
   const [selected, setSelected] = useState<{ threadId?: string; visitId?: string; title: string } | null>(
     openThreadId ? { threadId: openThreadId, title: 'Messages' } : null,
   )
@@ -156,7 +203,7 @@ export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; o
           data-testid="needs-approval-chip"
           className="w-full rounded-lg border border-amber-600 bg-amber-950/40 p-3 text-left text-sm font-semibold text-amber-100"
         >
-          {needsApprovalLabel(approvals)}
+          {approvalChipLabel(approvals)}
           <span className="mt-0.5 block text-xs font-normal text-amber-200">Drafts the AI team left for you to send, edit or reject.</span>
         </button>
       )}
@@ -172,7 +219,7 @@ export function MessagesScreen({ onBack, openThreadId }: { onBack: () => void; o
   )
 }
 
-// ── needs approval (U10) ─────────────────────────────────────────────────────────────────────────
+// ── waiting for approval (U10; was "Needs approval") ─────────────────────────────────────────────────────────────────────────
 
 /**
  * The drafts waiting for this person (an approver: their CRM login holds approve_drafts). The cards are the CRM's, built by
@@ -212,7 +259,7 @@ export function NeedsApprovalScreen({ onBack }: { onBack: () => void }) {
     <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
       <button type="button" onClick={onBack} className="text-sm text-sky-300">← Messages</button>
       <header className="space-y-1">
-        <h1 className="text-xl font-semibold text-white">Needs approval</h1>
+        <h1 className="text-xl font-semibold text-white">{WAITING_FOR_APPROVAL}</h1>
         <p className="text-xs text-slate-400" data-testid="live-status">{liveLabel(live.status)}</p>
       </header>
       {error && <p className="rounded-lg bg-slate-800 p-2 text-xs text-amber-200">{error}</p>}
@@ -325,6 +372,7 @@ export function MessageBubble({
   onDelete?: (id: string) => Promise<void>
 }) {
   const [mode, setMode] = useState<'view' | 'edit' | 'delete'>('view')
+  const ai = isAiAuthor(message.authorType, message.agentRole)
   const [draft, setDraft] = useState(message.body ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -342,8 +390,11 @@ export function MessageBubble({
   }
   return (
     <li className={`rounded-lg border p-3 text-sm text-white ${message.mine ? 'border-sky-700 bg-sky-950/40' : 'border-slate-700 bg-slate-800'}`} data-message-id={message.id}>
-      <p className="text-xs text-slate-400">
-        <span className="font-semibold text-slate-200">{message.authorLabel}</span> · {whenText(message.createdAt)}
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+        {ai && <AgentAvatarCircle role={message.agentRole} size={32} />}
+        <span className="text-sm font-semibold text-slate-200">{ai ? plainAuthorName(message.authorLabel) : message.authorLabel}</span>
+        {ai && <AiChip />}
+        <span>· {whenText(message.createdAt)}</span>
         {message.editedAt && <span className="text-amber-200"> · edited</span>}
       </p>
       {message.deleted ? (

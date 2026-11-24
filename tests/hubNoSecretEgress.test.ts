@@ -205,6 +205,67 @@ const EGRESSES: Egress[] = [
     },
   },
   {
+    // W2-E (Kyle 2026-11-23 item 7): "@Coding" sends the request's TEXT to GitHub (repository_dispatch). The seeded secrets are in that text; the one scrub
+    // layer must remove every one before it leaves, and the dispatch token may be in the Authorization header ONLY: not in the URL, the body, any other
+    // header, the stored run, the thread line, the audit rows or a log line.
+    name: "the GitHub repository_dispatch for @Coding (URL, headers, body), and what it stores and logs",
+    run: async () => {
+      const { mintAgentKey } = await import("../src/agentApi/keys");
+      const { handleCodingRequest, GITHUB_DISPATCH_URL } = await import("../src/services/hubCoding");
+      const DISPATCH = "ghp_EgressDispatchTokenValue0123456789";
+      const savedPepper = process.env.AGENT_KEY_PEPPER;
+      const savedDispatch = process.env.GITHUB_DISPATCH_TOKEN;
+      process.env.AGENT_KEY_PEPPER = "test-pepper-for-the-egress-suite";
+      process.env.GITHUB_DISPATCH_TOKEN = DISPATCH;
+      const thread = await prisma.hubThread.create({ data: { kind: "team", title: `${TAG} coding team`, technicianId: techId } });
+      const made = await mintAgentKey({ name: `${TAG} coding key`, agentRole: "claude_code", createdBy: "owner", writesEnabled: true });
+      const sent: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+      const logged: string[] = [];
+      const realFetch = globalThis.fetch;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+        if (!url.startsWith("https://api.github.com/")) return realFetch(input as never, init);
+        sent.push({ url, headers: { ...(init?.headers as Record<string, string>) }, body: String(init?.body ?? "") });
+        return new Response(null, { status: 204 });
+      });
+      for (const m of ["log", "warn", "error", "info"] as const) vi.spyOn(console, m).mockImplementation((...a: unknown[]) => { logged.push(a.map(String).join(" ")); });
+      try {
+        const msg = await prisma.hubMessage.create({
+          data: {
+            threadId: thread.id, authorType: "office", authorKey: "owner", authorDisplay: "Kyle", channel: "in_app", direction: "internal", status: "posted",
+            body: `@Coding ${SEEDED_TEXT} dispatch ${DISPATCH}`,
+          },
+        });
+        await handleCodingRequest(msg.id, prisma);
+        expect(sent).toHaveLength(1);
+        expect(sent[0].url).toBe(GITHUB_DISPATCH_URL);
+        // The token is in the Authorization header exactly as expected, and nowhere else in the request.
+        expect(sent[0].headers.Authorization).toBe(`Bearer ${DISPATCH}`);
+        const { Authorization: _auth, ...otherHeaders } = sent[0].headers;
+        expect(JSON.parse(sent[0].body).client_payload.text).toContain("token ");
+        const outgoing = [sent[0].url, sent[0].body, JSON.stringify(otherHeaders)];
+        expect(outgoing.join(" | ")).not.toContain(DISPATCH);
+        const run = await prisma.codingRun.findUniqueOrThrow({ where: { triggerMessageId: msg.id } });
+        expect(run.status).toBe("dispatched");
+        const [lines, audit, events] = await Promise.all([
+          prisma.hubMessage.findMany({ where: { threadId: thread.id, authorType: "system" } }),
+          prisma.hubAuditLog.findMany({ where: { threadId: thread.id } }),
+          prisma.systemEvent.findMany({ where: { createdAt: { gt: new Date(Date.now() - 5 * 60_000) } } }),
+        ]);
+        const stored = JSON.stringify({ run, lines, audit, events, logged });
+        expect(stored).not.toContain(DISPATCH);
+        return [...outgoing, stored];
+      } finally {
+        vi.restoreAllMocks();
+        await prisma.codingRun.deleteMany({ where: { threadId: thread.id } });
+        await prisma.agentKey.deleteMany({ where: { id: made.row.id } });
+        await prisma.hubThread.delete({ where: { id: thread.id } });
+        if (savedPepper === undefined) delete process.env.AGENT_KEY_PEPPER; else process.env.AGENT_KEY_PEPPER = savedPepper;
+        if (savedDispatch === undefined) delete process.env.GITHUB_DISPATCH_TOKEN; else process.env.GITHUB_DISPATCH_TOKEN = savedDispatch;
+      }
+    },
+  },
+  {
     name: "GET /hub/events (the Agent events screen's own answer)",
     run: async () => {
       await seededLeadEvent();

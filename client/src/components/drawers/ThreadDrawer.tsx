@@ -17,7 +17,7 @@
  *                         for anyone else) shows what the hub did in THIS conversation.
  *   AI drafts             an AI message waiting for approval (or held, failed or refused) is the ApprovalCard
  *                         in place of the plain message: Approve, Edit and Reject, the same card as in the
- *                         Messages "Needs approval" queue.
+ *                         Messages "Waiting for approval" queue.
  *
  *   Photos (U5, amendment 9b)  "Add photo" beside the box on a job, Team or Training thread. On a Team or
  *                         Training thread the picture is shrunk to 1600 px, held on the message you send (one

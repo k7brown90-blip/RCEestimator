@@ -150,7 +150,7 @@ describe("CrmLoginDialog", () => {
     const { powers } = show({ login: loginFor("t1", PERSON.name, { powers: ["treasury"] }) });
     await waitFor(() => expect(power("treasury").checked).toBe(true));
     expect(screen.getByText("Kyle-only powers")).toBeTruthy();
-    expect(CRM_POWER_KEYS).toHaveLength(8);
+    expect(CRM_POWER_KEYS).toHaveLength(9); // W2-E added coding_requests ("Ask Claude Code to change the app") to the original eight
     for (const key of CRM_POWER_KEYS) expect(screen.getByLabelText(CRM_POWERS[key].label)).toBeTruthy();
 
     fireEvent.click(power("price_book_edit"));

@@ -45,6 +45,7 @@ import {
 } from "../../shared/hub/model";
 import { hubKindsFor, isHubThreadKind, type HubThreadKind } from "../../shared/agentScopes";
 import { GROUP_CLOSED_POST_REASON } from "../../shared/hub/groups";
+import { parseMentions } from "../../shared/hub/mentions";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -138,11 +139,14 @@ export function readerKeyFor(req: Request): string | null {
  * (the AI admin and the agent keys are never notified by push). `canApprove` is the same test as
  * middleware/kylePowers canApprove, applied to the stored login instead of a request.
  */
-export async function readerForKey(key: string, db: Db = defaultPrisma): Promise<{ reader: HubReader; canApprove: boolean } | null> {
+export async function readerForKey(
+  key: string, db: Db = defaultPrisma,
+): Promise<{ reader: HubReader; canApprove: boolean; canAskCoding: boolean } | null> {
   if (key === "owner") {
     return {
       reader: { key, kind: "owner", display: "Kyle", technicianId: null, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: true },
       canApprove: true,
+      canAskCoding: true,
     };
   }
   if (key.startsWith("user:")) {
@@ -154,17 +158,42 @@ export async function readerForKey(key: string, db: Db = defaultPrisma): Promise
         threadKinds: [], agentRole: null, agentKeyId: null, isKyle: login.isPrincipal,
       },
       canApprove: login.isPrincipal || login.powers.includes("approve_drafts"),
+      // W2-E: the same login rule for the coding_requests power ("@Coding", services/hubCoding.ts): Kyle's principal login, or a login Kyle granted it to.
+      canAskCoding: login.isPrincipal || login.powers.includes("coding_requests"),
     };
   }
   if (key.startsWith("tech:")) {
     const t = await db.technician.findUnique({ where: { id: key.slice("tech:".length) }, select: { id: true, name: true, isActive: true } });
     if (!t || !t.isActive) return null;
+    // W2-D (Kyle 2026-11-23 item 6): a technician who is an approver has approvals to be told about on their field phone (their
+    // subscription is saved as tech:<id>). The reader stays a technician (a technician's tap URL and visibility are unchanged); only
+    // canApprove follows the ONE approver rule below.
+    // A technician's powers are their linked CRM login's (one lookup, shared with the approver rule below).
+    const linked = await linkedLoginFor(t.id, db);
     return {
       reader: { key, kind: "tech", display: t.name, technicianId: t.id, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false },
-      canApprove: false,
+      canApprove: linked?.canApprove === true,
+      canAskCoding: linked?.canAskCoding === true,
     };
   }
   return null;
+}
+
+/** The CRM login a technician is linked to, read as that login (readerForKey "user:"), or null when there is none, or it is off. */
+async function linkedLoginFor(technicianId: string, db: Db): Promise<{ reader: HubReader; canApprove: boolean; canAskCoding: boolean } | null> {
+  const login = await db.crmLogin.findUnique({ where: { technicianId }, select: { id: true } });
+  if (!login) return null;
+  return readerForKey("user:" + login.id, db);
+}
+
+/**
+ * The ONE approver rule for a technician (hubTech.techApproverReader is this, and so is a tech: subscription's canApprove above): the
+ * person is linked to a CRM login that is on, whose technician is active, and that is Kyle's principal login or holds approve_drafts.
+ * Returns that login's OFFICE reader (decisions are made and audited as the CRM identity), or null for everyone else.
+ */
+export async function approverReaderForTechnician(technicianId: string, db: Db = defaultPrisma): Promise<HubReader | null> {
+  const found = await linkedLoginFor(technicianId, db);
+  return found?.canApprove ? found.reader : null;
 }
 
 /**
@@ -966,10 +995,25 @@ export function fanOutMessage(message: HubMessage, thread: HubThread, context: {
   else if ((byPerson || byAgent) && (thread.kind === "team" || thread.kind === "group" || thread.kind === "job")) {
     // One event per agent whose key can read the conversation (a group: that is a member of it), never the author's own role.
     void emitTeamMessageEventsSafe({ messageId: message.id, context });
+    // W2-E (Kyle 2026-11-23 item 7): a PERSON's "@Coding" asks Claude Code to change the app, and the Claude Code key's own reply closes the
+    // run. Both are decided in services/hubCoding.ts; an agent's post never asks, and a system line is neither a person nor an agent.
+    if (byPerson && parseMentions(message.body).includes("claude_code")) routeToCoding("handleCodingRequestSafe", message.id);
+    // The reply closes the run it names: the Claude Code key's own post, or an approver's edit-approved copy of one (hubCoding decides which).
+    if ((byAgent && message.authorType === "claude") || (byPerson && message.editedFromId)) routeToCoding("closeCodingRunOnReplySafe", message.id);
     return;
   }
   if (!type) return;
   void emitHubEventSafe({ type, messageId: message.id, context });
+}
+
+/**
+ * Hand a message to the Claude Code runs (services/hubCoding.ts), fire-and-forget like the webhooks: it can never fail or slow the post.
+ * Imported on demand because hubCoding imports this file.
+ */
+function routeToCoding(call: "handleCodingRequestSafe" | "closeCodingRunOnReplySafe", messageId: string): void {
+  void import("./hubCoding")
+    .then((mod) => mod[call](messageId))
+    .catch((err) => logHubFailure("handing a message to Claude Code", err));
 }
 
 /** An own message's text, edited in place. Only its author, only while it stands as posted; the old text is in the audit. */
