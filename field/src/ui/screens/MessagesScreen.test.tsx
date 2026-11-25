@@ -7,9 +7,10 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import * as messagesScreen from './MessagesScreen'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  EDIT_NEEDS_WORDS, EditReason, GROUP_CLOSED_NOTE, MessageBubble, MessageThreadScreen, MessagesScreen, PHOTO_BUTTON, PHOTO_CLOSED_REASON, PHOTO_GROUP_REASON, ThreadRows, UNSENT_TEXT,
+  EDIT_NEEDS_WORDS, EditReason, GROUP_CLOSED_NOTE, MessageBubble, MessageThreadScreen, MessagesScreen, PHOTO_BUTTON, PHOTO_CLOSED_REASON, ThreadRows, UNSENT_TEXT,
   UnsentRow, heldPhotosToRestore, jobMessagesLabel, messagesButtonLabel, approvalChipLabel, photoClosedReason, takeBackHeldPhotos,
 } from './MessagesScreen'
 import { AVATAR_ROLES, agentAvatar } from '../../../../shared/hub/agentAvatar'
@@ -257,14 +258,29 @@ describe('greyed with the real reason, never silently', () => {
   })
 })
 
-describe('a group chat is words only and a message never reopens it (C7)', () => {
-  it('has its reasons in words the screen shows', () => {
-    expect(PHOTO_GROUP_REASON).toBe('Photos go on a job, Team or Training thread, not a group chat.')
+// Kyle, 2026-11-24: "I need be able to upload photos to all chats in the field app and CRM messages that we just built including
+// group chats". This block used to pin the opposite (a group "holds words only", PHOTO_GROUP_REASON); it is changed on purpose, not deleted.
+describe('a group chat takes photos like Team, and a message never reopens it (C7, photos 2026-11-24)', () => {
+  it('has its closed-group words, and the old "words only" reason is gone', () => {
     expect(GROUP_CLOSED_NOTE).toBe('The office closed this group. You can read it; sending is off until the office reopens it.')
+    expect('PHOTO_GROUP_REASON' in messagesScreen).toBe(false)
   })
-  it('a group shows its own photo reason, never the Team one (the screen picks PHOTO_GROUP_REASON for kind group)', () => {
-    expect(photoClosedReason('closed', 'group')).toBe(PHOTO_CLOSED_REASON)
+  it('an open group has no photo reason: 📷 Add photo is live, exactly as on Team', () => {
     expect(photoClosedReason('open', 'group')).toBeNull()
+    expect(photoClosedReason('open', 'team')).toBeNull()
+  })
+  it('a closed group says the group is closed (only the office Reopens it), never "Send a message to open it again"', () => {
+    const reason = photoClosedReason('closed', 'group')
+    expect(reason).toBe(GROUP_CLOSED_NOTE)
+    expect(reason).not.toBe(PHOTO_CLOSED_REASON)
+    expect(reason).not.toContain('Send a message to open it again')
+  })
+  it("a group member's own photo message shows its photo and carries Delete (which takes the photo with it)", () => {
+    const html = renderToStaticMarkup(
+      <MessageBubble message={message({ body: 'Look at this', attachments: [{ id: 'a1', mimeType: 'image/jpeg' }] })} visitId={null} />,
+    )
+    expect(html).toContain('data-testid="message-photos"')
+    expect(html).toContain('>Delete<')
   })
 })
 

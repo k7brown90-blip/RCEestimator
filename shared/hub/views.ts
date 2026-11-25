@@ -169,7 +169,7 @@ export interface ThreadMessage {
   canEdit: boolean;
   /** An own message, or any message when the reader is Kyle; not already deleted. */
   canDelete: boolean;
-  /** Photos held on this message (a Team or Training thread's photo). Authenticated fetch by id; never a URL with a token. */
+  /** Photos held on this message (a Team, Training or group thread's photo). Authenticated fetch by id; never a URL with a token. */
   attachments: AttachmentRef[];
   /** Job photos on this message: VisitPhoto ids already filed on the thread's job (a job thread only). */
   photoIds: string[];

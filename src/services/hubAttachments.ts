@@ -1,6 +1,6 @@
 /**
  * Photos held on a hub message (work order agent-team, U5 amendment 9b): the ONE store for a photo that
- * belongs to no job - a Team or Training thread's. HubAttachment; there is no second photo table, and a
+ * belongs to no job - a Team, Training or group thread's. HubAttachment; there is no second photo table, and a
  * job thread's photo is NOT here: it is a VisitPhoto filed on that job and named by the message's photoIds
  * (Kyle's 2026-10-02 DraftPhoto ruling still governs job photos).
  *
@@ -9,7 +9,8 @@
  * back by its owner (removeAttachment). Deleting the message removes its photos with it (softDeleteMessage).
  *
  * Who may add: a person (the owner, a CRM login or a technician) who may post in that thread - the Team
- * thread rule applies, so nobody adds a photo to another person's Team thread. Who may read: anyone the one
+ * thread rule applies, so nobody adds a photo to another person's Team thread. In a group, postRefusal's own rule applies
+ * (members only, and not while the group is closed). Who may read: anyone the one
  * visibility rule lets see the thread (readAttachment), by an authenticated fetch. Never a token in a URL.
  */
 import sharp from "sharp";
@@ -26,8 +27,8 @@ export const ATTACHMENT_MAX_STAGED = 6;
 
 const MIME_BY_FORMAT: Record<string, string> = { jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
 
-/** Team and Training threads hold a photo on the message; a job's photo is the job's. */
-export const ATTACHMENT_JOB_REASON = "Photos go on a job's thread";
+/** Team, Training and group threads hold a photo on the message; a job's photo is the job's; a dev thread holds none. */
+export const ATTACHMENT_JOB_REASON = "Photos go on a job, Team, Training or group thread";
 
 export async function uploadAttachment(
   reader: HubReader, threadId: string, bytes: Buffer, db: PrismaClient = defaultPrisma,
@@ -39,7 +40,9 @@ export async function uploadAttachment(
   if (bytes.length > ATTACHMENT_MAX_BYTES) throw new HubError("That picture is over 10 MB.", 413);
   const thread = await findVisibleThread(reader, threadId, db);
   if (!thread) throw new HubError("Conversation not found", 404);
-  if (thread.kind !== "team" && thread.kind !== "training") throw new HubError(`${ATTACHMENT_JOB_REASON}, not here.`, 409);
+  // Kyle, 2026-11-24: "upload photos to all chats ... including group chats". A group's posting rules (members only, not
+  // while closed) are postRefusal's, asked right below, so a non-member or a closed group is refused with ITS reason.
+  if (thread.kind !== "team" && thread.kind !== "training" && thread.kind !== "group") throw new HubError(`${ATTACHMENT_JOB_REASON}, not here.`, 409);
   const refusal = await postRefusal(reader, thread, db);
   if (refusal) throw new HubError(refusal, 403);
   if (thread.status === "closed") throw new HubError("This thread is closed. Reopen it to add a photo.", 409);

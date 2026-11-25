@@ -167,7 +167,7 @@ export function registerHubTechRoutes(
     res.json({ success: true, data: { deleted: true } });
   }));
 
-  // A photo on the technician's own Team (or Training) thread, held on the message: the raw-image pattern of
+  // A photo on the technician's own Team (or Training or group) thread, held on the message: the raw-image pattern of
   // the job-photo upload above it, which the global 1 MB JSON parser never touches.
   router.post(
     "/hub/threads/:id/attachments",

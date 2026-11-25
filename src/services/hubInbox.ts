@@ -151,7 +151,7 @@ export async function threadDetail(
     for (const a of audits) if (a.messageId) whoDeleted.set(a.messageId, a.actorDisplay);
   }
 
-  // The photos held on these messages (a Team or Training thread's), one query; never their bytes.
+  // The photos held on these messages (a Team, Training or group thread's), one query; never their bytes.
   const held = new Map<string, Array<{ id: string; mimeType: string }>>();
   const heldRows = rows.length === 0 ? [] : await db.hubAttachment.findMany({
     where: { messageId: { in: rows.filter((m) => !m.deletedAt).map((m) => m.id) }, deletedAt: null },

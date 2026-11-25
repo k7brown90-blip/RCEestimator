@@ -189,6 +189,21 @@ export async function removeGroupMember(
       actorKey: reader.key, actorDisplay: reader.display, action: "group_member_removed", entityType: "thread", entityId: threadId, threadId,
       beforeText: name ?? null, details: technicianId ? { technicianId } : { agentKeyId },
     });
+    // A person taken out of the group can no longer reach a photo they added and did not send (the group left their list, so
+    // their Remove answers 404, and no office screen lists another person's held photos). Taking them back here keeps every
+    // held photo with an exit (Kyle's nothing-permanent rule). Agents never add photos, so only a person has any.
+    if (technicianId) {
+      const held = await tx.hubAttachment.findMany({ where: { threadId, messageId: null, deletedAt: null, technicianId }, select: { id: true } });
+      if (held.length > 0) {
+        await tx.hubAttachment.updateMany({ where: { id: { in: held.map((h) => h.id) } }, data: { deletedAt: new Date() } });
+        for (const h of held) {
+          await hubAudit(tx, {
+            actorKey: reader.key, actorDisplay: reader.display, action: "attachment_removed", entityType: "attachment",
+            entityId: h.id, threadId, details: { reason: "member removed from group" },
+          });
+        }
+      }
+    }
   });
   publishHubChange({ type: "changed", threadId, messageId: null });
   return thread;

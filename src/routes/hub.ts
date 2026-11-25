@@ -243,7 +243,7 @@ const postSchema = z.object({
   subject: z.string().trim().max(200).nullish(),
   /** A job thread's photos: VisitPhoto ids already filed on that job. */
   photoIds: z.array(z.string().min(1)).max(6).default([]),
-  /** A Team or Training thread's photos: HubAttachment ids added to this thread and not yet sent. */
+  /** A Team, Training or group thread's photos: HubAttachment ids added to this thread and not yet sent. */
   attachmentIds: z.array(z.string().min(1)).max(6).default([]),
   /** One id per composed message, sent again on every retry of it: a repeat answers with the message already made. */
   clientMessageId: z.string().trim().min(CLIENT_MESSAGE_ID_MIN).max(CLIENT_MESSAGE_ID_MAX).optional(),
@@ -347,7 +347,7 @@ hubRouter.get("/hub/stream", (req, res, next) => {
   }
 });
 
-// A photo on a Team (or Training) thread, held on the message. Raw image bytes - the CRM shrinks the picture to
+// A photo on a Team (or Training or group) thread, held on the message. Raw image bytes - the CRM shrinks the picture to
 // 1600 px first - so the global 1 MB JSON parser never sees it. A job's photo is filed on the job instead.
 hubRouter.post(
   "/hub/threads/:id/attachments",

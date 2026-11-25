@@ -5,10 +5,10 @@
  *   Home            "💬 Messages (3 new)" under the day's list, beside "My accounts", "Purchases", "My truck".
  *   Job site        "💬 Job messages (n)": opens THAT job's crew thread straight away.
  *   Messages        the list: your own "Team" thread (you and the AI team), your "Training" thread if you have one,
- *                   the group chats the office put you in (C7, tagged "Group"; words only, no photos),
+ *                   the group chats the office put you in (C7, tagged "Group"),
  *                   and one row per job you are on. "Turn on notifications on this device" is at the top of it.
  *   A thread        the messages, a box and "Send". "📷 Add photo" puts a picture on the message: on a job it is
- *                   filed on the JOB's own photos; on Team it is held on the message. Your own messages carry
+ *                   filed on the JOB's own photos; on Team, Training or a group it is held on the message. Your own messages carry
  *                   "Edit" and "Delete" (Delete leaves "Deleted" where it was; the office keeps the words).
  *   No signal       the message stays on screen as "Not sent, no signal. Tap to retry."
  *
@@ -70,11 +70,9 @@ export const UNSENT_TEXT = 'Not sent, no signal. Tap to retry.'
 export const PHOTO_BUTTON = '📷 Add photo'
 /** Why "Save changes" is greyed on an empty box (a photo-only message edited down to nothing). */
 export const EDIT_NEEDS_WORDS = "Type some words to save. A message can't be edited down to nothing. To take the photo back, use Delete."
-/** Why "📷 Add photo" is greyed on a Team or Training thread the office closed (a job's photo is the job's and is not held here). */
+/** Why "📷 Add photo" is greyed on a Team or Training thread the office closed (a job's photo is the job's and is not held here). A closed GROUP says GROUP_CLOSED_NOTE instead. */
 export const PHOTO_CLOSED_REASON = 'The office closed this thread. Send a message to open it again, then add a photo.'
-/** Why "📷 Add photo" is greyed in a group chat (C7): a group holds words only. */
-export const PHOTO_GROUP_REASON = 'Photos go on a job, Team or Training thread, not a group chat.'
-/** Why Send is greyed in a closed group: a message never reopens a group, only the office's Reopen does. */
+/** Why Send and "📷 Add photo" are greyed in a closed group: a message never reopens a group, only the office's Reopen does. */
 export const GROUP_CLOSED_NOTE = 'The office closed this group. You can read it; sending is off until the office reopens it.'
 
 const whenText = (iso: string): string =>
@@ -312,9 +310,14 @@ export function EditReason({ draft }: { draft: string }) {
   return <p className="text-xs text-amber-200" data-testid="edit-needs-words">{EDIT_NEEDS_WORDS}</p>
 }
 
-/** Why "📷 Add photo" is greyed on this thread, or null. Only Team and Training photos are uploaded ahead of the message. */
+/**
+ * Why "📷 Add photo" is greyed on this thread, or null. Team, Training and group photos are uploaded ahead of the message (Kyle,
+ * 2026-11-24: photos in every chat, group chats included). A closed Team or Training thread is opened again by a message; a closed
+ * GROUP never is (only the office's Reopen), so it gets the group's own words, never "Send a message to open it again".
+ */
 export function photoClosedReason(status: string | undefined, kind: string | undefined): string | null {
-  return status === 'closed' && kind !== 'job' ? PHOTO_CLOSED_REASON : null
+  if (status !== 'closed' || kind === 'job') return null
+  return kind === 'group' ? GROUP_CLOSED_NOTE : PHOTO_CLOSED_REASON
 }
 
 /** The photos the server holds for this person that this screen is not already showing (a reload, "← Messages", a discarded message). */
@@ -615,9 +618,8 @@ export function MessageThreadScreen({
   const heading = detail ? (detail.thread.kind === 'team' ? 'Team' : detail.thread.kind === 'training' ? 'Training' : detail.thread.title) : title
   const groupClosed = kind === 'group' && detail?.thread.status === 'closed'
   const closedNote = groupClosed ? GROUP_CLOSED_NOTE : detail?.thread.status === 'closed' ? 'The office closed this thread; sending a message opens it again.' : null
-  // A Team or Training photo is uploaded before the message, and the server will not take one into a closed thread.
-  const photoClosed = photoClosedReason(detail?.thread.status, kind) !== null
-  const noPhotos = kind === 'group'
+  // A Team, Training or group photo is uploaded before the message, and the server will not take one into a closed thread.
+  const photoClosed = photoClosedReason(detail?.thread.status, kind)
 
   return (
     <div className="mx-auto max-w-xl space-y-4 p-6 pb-16">
@@ -665,9 +667,8 @@ export function MessageThreadScreen({
             ))}
           </ul>
         )}
-        <PhotoPicker onPick={(f) => void addPhoto(f)} disabled={busy || !detail || staged.length >= 6 || photoClosed || noPhotos} cameraLabel={PHOTO_BUTTON} />
-        {photoClosed && !noPhotos && <p className="text-xs text-slate-400" data-testid="photo-closed-reason">{PHOTO_CLOSED_REASON}</p>}
-        {noPhotos && <p className="text-xs text-slate-400" data-testid="photo-group-reason">{PHOTO_GROUP_REASON}</p>}
+        <PhotoPicker onPick={(f) => void addPhoto(f)} disabled={busy || !detail || staged.length >= 6 || photoClosed !== null} cameraLabel={PHOTO_BUTTON} />
+        {photoClosed && <p className="text-xs text-slate-400" data-testid="photo-closed-reason">{photoClosed}</p>}
         <button
           type="button"
           onClick={() => void send()}

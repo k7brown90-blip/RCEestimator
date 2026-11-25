@@ -10,7 +10,7 @@
  *                         "Email the customer" are the same buttons as on the account, never a second
  *                         email box here.
  *   Group chats (C7)      the office-made kind: a Members panel on top (Remove, Add members, Delete group - only
- *                         while nothing has been said in it) and "Post to group". Header "Close group" / "Reopen".
+ *                         while nothing has been said in it) and "Post to group" (with "Add photo"). Header "Close group" / "Reopen".
  *   Header                "Rename" and "Close thread" / "Reopen". There is no Delete thread and no New
  *                         thread: a Team thread is one per person, made the first time they write
  *                         (team answer 9a), so its exit is Close. "Audit" (Kyle only, greyed with the reason
@@ -19,8 +19,8 @@
  *                         in place of the plain message: Approve, Edit and Reject, the same card as in the
  *                         Messages "Waiting for approval" queue.
  *
- *   Photos (U5, amendment 9b)  "Add photo" beside the box on a job, Team or Training thread. On a Team or
- *                         Training thread the picture is shrunk to 1600 px, held on the message you send (one
+ *   Photos (U5, amendment 9b)  "Add photo" beside the box on a job, Team, Training or group thread. On a Team,
+ *                         Training or group thread the picture is shrunk to 1600 px, held on the message you send (one
  *                         HubAttachment) and taken back with "Remove" until it is sent; deleting the message takes
  *                         its photos with it. On a JOB thread the picture is filed on the job's own photos when
  *                         you press "Post to crew" and named by the message. Pictures are fetched with your session.
@@ -323,7 +323,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
     onError: (err) => setActionError((err as Error).message),
   });
 
-  // "Add photo": the picture is shrunk to 1600 px here, then held (Team, Training) or kept for the job (job).
+  // "Add photo": the picture is shrunk to 1600 px here, then held (Team, Training, group) or kept for the job (job).
   async function addPhoto(file: File | undefined) {
     if (!file || !data) return;
     setPicking(true);
@@ -347,7 +347,7 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
     }
   }
 
-  // Take a picture back before it is sent. A Team photo is removed from the server too.
+  // Take a picture back before it is sent. A held (Team, Training or group) photo is removed from the server too.
   async function removePhoto(photo: StagedPhoto) {
     try {
       if (photo.attachmentId) await api.removeHubAttachment(photo.attachmentId);
@@ -368,8 +368,9 @@ export function ThreadDrawer({ id, onClose }: { id: string; onClose: () => void 
   const postLabel = thread ? postButtonLabel(thread.kind) : "Post";
   // The server says when this is another person's Team thread (data.postBlock); that reason leads.
   const postBlock = data?.postBlock ?? (closed ? "This thread is closed. Reopen it to post." : !text.trim() && staged.length === 0 ? "Write a message first." : null);
-  // Dev threads hold no photos; every other kind that has a composer does.
-  const photoBlock: string | null = !thread || thread.kind === "dev" || thread.kind === "group" ? "Photos go on a job, Team or Training thread."
+  // Dev threads hold no photos; every other kind that has a composer does, a group's included (Kyle, 2026-11-24). A group an office login is
+  // not in, or a closed one, greys the button with the server's own reason (data.postBlock leads).
+  const photoBlock: string | null = !thread || thread.kind === "dev" ? "Photos go on a job, Team, Training or group thread."
     : data?.postBlock ?? (closed ? "This thread is closed. Reopen it to add a photo." : null);
   const newAfter = seenAt.current ? new Date(seenAt.current).getTime() : 0;
 

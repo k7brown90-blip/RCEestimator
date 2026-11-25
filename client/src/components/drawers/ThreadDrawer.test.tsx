@@ -62,7 +62,7 @@ describe("ThreadDrawer: a crew thread", () => {
     await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "Bring the 200 amp base", clientMessageId: expect.any(String) }));
   });
 
-  it("a group chat shows its Members panel above the messages, says 'Post to group', offers 'Close group' and no photos", async () => {
+  it("a group chat shows its Members panel above the messages, says 'Post to group', offers 'Close group' and 'Add photo' (Kyle, 2026-11-24: photos in every chat, group chats included)", async () => {
     const dialog = await open({
       ...threadDetail([threadMessage({ id: "m-1", body: "Truck is loaded" })], { kind: "group", title: "Install crew", visitId: null, technicianId: null }),
       group: groupView({ messageCount: 1, canDelete: false, deleteReason: GROUP_HAS_HISTORY_REASON }),
@@ -73,7 +73,8 @@ describe("ThreadDrawer: a crew thread", () => {
     expect(within(dialog).getByRole("button", { name: "Close group" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Rename" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Delete group" })).toBeDisabled();
-    expect(within(dialog).getByRole("button", { name: "Add photo" })).toBeDisabled();
+    // This line used to pin the opposite (greyed, "groups hold words only"); changed on purpose by Kyle's 2026-11-24 request.
+    expect(within(dialog).getByRole("button", { name: "Add photo" })).toBeEnabled();
   });
 
   it("a closed group says why it cannot be posted in and offers Reopen", async () => {
@@ -309,7 +310,67 @@ describe("ThreadDrawer: Add photo (U5, amendment 9b)", () => {
   it("is greyed on a Dev thread, which holds no photos", async () => {
     const dev = await open(threadDetail([], { kind: "dev", title: "Dev", visitId: null }));
     expect(within(dev).getByRole("button", { name: "Add photo" })).toBeDisabled();
-    expect(within(dev).getByText("Photos go on a job, Team or Training thread.")).toBeInTheDocument();
+    expect(within(dev).getByText("Photos go on a job, Team, Training or group thread.")).toBeInTheDocument();
+  });
+
+  // Kyle, 2026-11-24: "upload photos to all chats ... CRM messages that we just built including group chats".
+  const GROUP = { kind: "group", title: "Install crew", visitId: null, technicianId: null } as const;
+
+  it("is on a group chat: held on the server like Team (never filed on a job), sent with 'Post to group', and Remove takes it back first", async () => {
+    stubObjectUrls();
+    const blob = new Blob(["x"], { type: "image/jpeg" });
+    vi.spyOn(images, "downscaleToBlob").mockResolvedValue(blob);
+    const upload = vi.spyOn(api, "uploadHubAttachment").mockResolvedValue({ id: "att-g1", mimeType: "image/jpeg", sizeBytes: 1 });
+    const removeAtt = vi.spyOn(api, "removeHubAttachment").mockResolvedValue(undefined);
+    const visitPhoto = vi.spyOn(api, "uploadVisitPhoto");
+    const dialog = await open({ ...threadDetail([], GROUP), group: groupView() });
+    expect(within(dialog).getByRole("button", { name: "Add photo" })).toBeEnabled();
+    pick(dialog);
+    await waitFor(() => expect(upload).toHaveBeenCalledWith("thread-1", blob));
+    const post = within(dialog).getByRole("button", { name: "Post to group" });
+    await waitFor(() => expect(post).toBeEnabled());
+    const posted = vi.spyOn(api, "postHubMessage").mockResolvedValue({ id: "m-9" });
+    fireEvent.click(post);
+    await waitFor(() => expect(posted).toHaveBeenCalledWith("thread-1", { body: "", clientMessageId: expect.any(String), attachmentIds: ["att-g1"] }));
+    // A group photo is never a job photo.
+    expect(visitPhoto).not.toHaveBeenCalled();
+
+    // The exit before it is sent.
+    upload.mockResolvedValue({ id: "att-g2", mimeType: "image/jpeg", sizeBytes: 1 });
+    pick(dialog, "q.jpg");
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeAtt).toHaveBeenCalledWith("att-g2"));
+    expect(within(dialog).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  });
+
+  it("a group photo that was sent shows on the message, with Delete (which takes it with the message)", async () => {
+    stubObjectUrls();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(new Blob(["img"], { type: "image/jpeg" }), { status: 200 }));
+    const dialog = await open({
+      ...threadDetail([threadMessage({ id: "m-g", body: "Look", mine: true, canEdit: true, canDelete: true, attachments: [{ id: "att-g1", mimeType: "image/jpeg" }] })], GROUP),
+      group: groupView(),
+    });
+    await waitFor(() => expect(within(dialog).getAllByRole("img").length).toBe(1));
+    const remove = vi.spyOn(api, "deleteHubMessage").mockResolvedValue(undefined);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    fireEvent.change(within(dialog).getByLabelText("Why is it being deleted?"), { target: { value: "Wrong chat" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete message" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("m-g", { reason: "Wrong chat" }));
+  });
+
+  it("is greyed, not hidden, for an office login that is not in the group, with the server's own reason", async () => {
+    const why = "You are not a member of this group, so you can read and manage it but not post. Add yourself under Members to post.";
+    const dialog = await open({ ...threadDetail([], GROUP), group: groupView(), postBlock: why });
+    expect(within(dialog).getByRole("button", { name: "Add photo" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Add photo" })).toHaveAttribute("title", why);
+    expect(within(dialog).getByText(why)).toBeInTheDocument();
+  });
+
+  it("is greyed on a closed group with the group's own words and Reopen is offered", async () => {
+    const dialog = await open({ ...threadDetail([], { ...GROUP, status: "closed" }), group: groupView(), postBlock: GROUP_CLOSED_POST_REASON });
+    expect(within(dialog).getByRole("button", { name: "Add photo" })).toBeDisabled();
+    expect(within(dialog).getByText(GROUP_CLOSED_POST_REASON)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Reopen" })).toBeInTheDocument();
   });
 
   it("a failed post and a second 'Post to crew' name the photos already filed on the job; it does not file them again", async () => {

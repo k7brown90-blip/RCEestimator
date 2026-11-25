@@ -25,6 +25,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import sharp from "sharp";
 import { randomUUID } from "node:crypto";
 
 process.env.GOOGLE_CLIENT_ID = "test_id";
@@ -148,6 +149,7 @@ const groupOf = async (token: string, name: string, members: { technicianIds?: s
   expect(res.status).toBe(201);
   return res.body.id as string;
 };
+const jpeg = (): Promise<Buffer> => sharp({ create: { width: 8, height: 8, channels: 3, background: "#cc3300" } }).jpeg().toBuffer(); // synthetic only: public repo
 const fieldGet = (token: string, path: string) => request(app).get(`/health-record${path}`).set(bearer(token));
 const fieldPost = (token: string, path: string, body: object = {}) => request(app).post(`/health-record${path}`).set(bearer(token)).send(body);
 const crmPost = (token: string, id: string, body: string) => request(app).post(`/hub/threads/${id}/messages`).set(bearer(token)).send({ body });
@@ -341,15 +343,154 @@ describe("posting, unread and notification", () => {
     expect((await crmPost(michael.token, id, "Now I am in")).status).toBe(201);
   });
 
-  it("a technician who is not in the group cannot post in it, and a group takes no customer or photo", async () => {
+  it("a technician who is not in the group cannot post in it, and cannot add a photo to it either", async () => {
     const eric = await makeTech("Eric");
     const sam = await makeTech("Sam");
     const id = await groupOf(await pinToken(), `${TAG} Crew`, { technicianIds: [eric.id] });
     expect((await fieldPost(sam.accessToken, `/hub/threads/${id}/messages`, { body: "Let me in" })).status).toBe(403);
     expect(await prisma.hubMessage.count({ where: { threadId: id } })).toBe(0);
-    // Words only: a photo is refused with the reason the screen shows.
-    const photo = await request(app).post(`/health-record/hub/threads/${id}/attachments`).set(bearer(eric.accessToken)).set("Content-Type", "image/png").send(Buffer.from("not-an-image"));
-    expect(photo.status).toBe(409);
+    // Kyle, 2026-11-24 ("photos in every chat ... including group chats") replaced the old "a group is words only" 409 that was
+    // pinned here. Sam is not in the group, so the field door refuses his photo exactly as it refuses his message (403), and no photo row is made.
+    const photo = await request(app).post(`/health-record/hub/threads/${id}/attachments`).set(bearer(sam.accessToken)).set("Content-Type", "image/jpeg").send(await jpeg());
+    expect(photo.status).toBe(403);
+    expect(await prisma.hubAttachment.count({ where: { threadId: id } })).toBe(0);
+  });
+});
+
+// ── photos in a group (Kyle, 2026-11-24: "upload photos to all chats ... including group chats") ───────────────────────
+describe("photos in a group chat: the same store, the same exits, the same posting rules as Team", () => {
+  const techUp = async (token: string, id: string) =>
+    request(app).post(`/health-record/hub/threads/${id}/attachments`).set(bearer(token)).set("Content-Type", "image/jpeg").send(await jpeg());
+  const crmUp = async (token: string, id: string) =>
+    request(app).post(`/hub/threads/${id}/attachments`).set(bearer(token)).set("Content-Type", "image/jpeg").send(await jpeg());
+
+  it("a member adds a photo, sends it, every member sees it, the author Deletes the message and the photo goes with it - never a VisitPhoto", async () => {
+    const eric = await makeTech("Eric");
+    const sam = await makeTech("Sam");
+    const id = await groupOf(await pinToken(), `${TAG} Photos`, { technicianIds: [eric.id, sam.id] });
+    const visitPhotosBefore = await prisma.visitPhoto.count();
+
+    const up = await techUp(eric.accessToken, id);
+    expect(up.status).toBe(201);
+    const photoId = up.body.data.id as string;
+    // Held for Eric only: it comes back on his thread with its Remove, and Sam does not hold it.
+    expect((await fieldGet(eric.accessToken, `/hub/threads/${id}/messages`)).body.data.staged).toEqual([{ id: photoId, mimeType: "image/jpeg" }]);
+    expect((await fieldGet(sam.accessToken, `/hub/threads/${id}/messages`)).body.data.staged).toEqual([]);
+    expect(await prisma.hubAttachment.findUniqueOrThrow({ where: { id: photoId } })).toMatchObject({ threadId: id, messageId: null, deletedAt: null, mimeType: "image/jpeg" });
+
+    // Sam cannot send Eric's photo in his own message.
+    expect((await fieldPost(sam.accessToken, `/hub/threads/${id}/messages`, { body: "", attachmentIds: [photoId] })).status).toBe(409);
+
+    const sent = await fieldPost(eric.accessToken, `/hub/threads/${id}/messages`, { body: "Panel is open", attachmentIds: [photoId] });
+    expect(sent.status).toBe(201);
+    const messageId = (await prisma.hubMessage.findFirstOrThrow({ where: { threadId: id } })).id;
+    expect(await prisma.hubAttachment.findUniqueOrThrow({ where: { id: photoId } })).toMatchObject({ messageId });
+
+    // Sam (a member) and the office reader both see it, and can fetch the picture with the session.
+    const samView = await fieldGet(sam.accessToken, `/hub/threads/${id}/messages`);
+    expect(samView.body.data.messages[0].attachments).toEqual([{ id: photoId, mimeType: "image/jpeg" }]);
+    expect((await fieldGet(sam.accessToken, `/hub/attachments/${photoId}`)).status).toBe(200);
+    const pin = await pinToken();
+    const officeView = await request(app).get(`/hub/threads/${id}`).set(bearer(pin));
+    expect(officeView.body.messages[0].attachments).toEqual([{ id: photoId, mimeType: "image/jpeg" }]);
+    expect((await request(app).get(`/hub/attachments/${photoId}`).set(bearer(pin))).status).toBe(200);
+
+    // Delete (the exit after sending): the message and its photo go together; nobody can fetch it again.
+    expect((await request(app).delete(`/health-record/hub/messages/${messageId}`).set(bearer(eric.accessToken)).send({ reason: "Wrong chat" })).status).toBe(200);
+    expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: photoId } })).deletedAt).not.toBeNull();
+    expect((await fieldGet(sam.accessToken, `/hub/attachments/${photoId}`)).status).toBe(404);
+    expect((await request(app).get(`/hub/attachments/${photoId}`).set(bearer(pin))).status).toBe(404);
+
+    // Never the job's gallery or completion report.
+    expect(await prisma.visitPhoto.count()).toBe(visitPhotosBefore);
+  });
+
+  it("Remove before Send: the member who added a photo takes it back (no one else may), and nothing is left to send", async () => {
+    const eric = await makeTech("Eric");
+    const sam = await makeTech("Sam");
+    const id = await groupOf(await pinToken(), `${TAG} Remove`, { technicianIds: [eric.id, sam.id] });
+    const photoId = (await techUp(eric.accessToken, id)).body.data.id as string;
+    expect((await request(app).delete(`/health-record/hub/attachments/${photoId}`).set(bearer(sam.accessToken))).status).toBe(403);
+    expect((await request(app).delete(`/health-record/hub/attachments/${photoId}`).set(bearer(eric.accessToken))).status).toBe(200);
+    expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: photoId } })).deletedAt).not.toBeNull();
+    expect((await fieldGet(eric.accessToken, `/hub/threads/${id}/messages`)).body.data.staged).toEqual([]);
+    // A removed photo cannot be sent, and no message is made.
+    expect((await fieldPost(eric.accessToken, `/hub/threads/${id}/messages`, { body: "", attachmentIds: [photoId] })).status).toBe(409);
+    expect(await prisma.hubMessage.count({ where: { threadId: id } })).toBe(0);
+  });
+
+  it("an office login that IS a member adds, sends and Removes through the CRM routes; one that is NOT a member is refused with the member reason and no photo is made", async () => {
+    const eric = await makeTech("Eric");
+    const michael = await makeOffice("Michael");
+    const dana = await makeOffice("Dana");
+    const id = await groupOf(await pinToken(), `${TAG} Office photos`, { technicianIds: [eric.id, michael.tech.id] });
+
+    const refused = await crmUp(dana.token, id); // Dana reads and manages the group but is not in it
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatch(/not a member of this group/);
+    expect(refused.body.error).toMatch(/Add yourself under Members/);
+    expect(await prisma.hubAttachment.count({ where: { threadId: id } })).toBe(0);
+
+    const first = await crmUp(michael.token, id);
+    expect(first.status).toBe(201);
+    const sent = await request(app).post(`/hub/threads/${id}/messages`).set(bearer(michael.token)).send({ body: "", attachmentIds: [first.body.id] });
+    expect(sent.status).toBe(201);
+    expect((await fieldGet(eric.accessToken, `/hub/threads/${id}/messages`)).body.data.messages[0].attachments).toEqual([{ id: first.body.id, mimeType: "image/jpeg" }]);
+    // Dana (not a member) still reads the group's photo: the office reads every group.
+    expect((await request(app).get(`/hub/attachments/${first.body.id}`).set(bearer(dana.token))).status).toBe(200);
+
+    const second = await crmUp(michael.token, id);
+    expect(second.status).toBe(201);
+    expect((await request(app).delete(`/hub/attachments/${second.body.id}`).set(bearer(michael.token))).status).toBe(204);
+    expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: second.body.id } })).deletedAt).not.toBeNull();
+  });
+
+  it("a closed group refuses a photo with the group's own words, and a photo held before it closed cannot be sent", async () => {
+    const eric = await makeTech("Eric");
+    const pin = await pinToken();
+    const id = await groupOf(pin, `${TAG} Closed photos`, { technicianIds: [eric.id] });
+    const held = (await techUp(eric.accessToken, id)).body.data.id as string;
+    expect((await request(app).patch(`/hub/threads/${id}`).set(bearer(pin)).send({ status: "closed" })).status).toBe(200);
+
+    const refused = await crmUp(pin, id);
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toBe("This group is closed. Reopen it to post.");
+    expect(refused.body.error).not.toMatch(/send a message/i);
+    expect(await prisma.hubAttachment.count({ where: { threadId: id } })).toBe(1);
+    // The photo added before the close cannot go out while it is closed.
+    expect((await fieldPost(eric.accessToken, `/hub/threads/${id}/messages`, { body: "", attachmentIds: [held] })).status).toBe(403);
+    expect(await prisma.hubMessage.count({ where: { threadId: id } })).toBe(0);
+  });
+
+  it("a member taken out of the group while holding an unsent photo has it taken back (so none is stranded); the other members' held photos and sent photos stay", async () => {
+    const eric = await makeTech("Eric");
+    const sam = await makeTech("Sam");
+    const pin = await pinToken();
+    const id = await groupOf(pin, `${TAG} Removed holding`, { technicianIds: [eric.id, sam.id] });
+    const ericHeld = (await techUp(eric.accessToken, id)).body.data.id as string;
+    const ericSent = (await techUp(eric.accessToken, id)).body.data.id as string;
+    expect((await fieldPost(eric.accessToken, `/hub/threads/${id}/messages`, { body: "Sent one", attachmentIds: [ericSent] })).status).toBe(201);
+    const samHeld = (await techUp(sam.accessToken, id)).body.data.id as string;
+
+    expect((await request(app).delete(`/hub/groups/${id}/members`).set(bearer(pin)).send({ technicianId: eric.id })).status).toBe(200);
+
+    // Eric can no longer reach his held photo himself (the group left his list), so the removal took it back.
+    expect((await request(app).delete(`/health-record/hub/attachments/${ericHeld}`).set(bearer(eric.accessToken))).status).toBe(404);
+    expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: ericHeld } })).deletedAt).not.toBeNull();
+    const audit = await prisma.hubAuditLog.findFirst({ where: { action: "attachment_removed", entityId: ericHeld } });
+    expect(audit).not.toBeNull();
+    // A photo already sent stays with its message (history), and Sam's held photo is untouched.
+    expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: ericSent } })).deletedAt).toBeNull();
+    expect((await prisma.hubAttachment.findUniqueOrThrow({ where: { id: samHeld } })).deletedAt).toBeNull();
+    expect((await fieldGet(sam.accessToken, `/hub/threads/${id}/messages`)).body.data.staged).toEqual([{ id: samHeld, mimeType: "image/jpeg" }]);
+  });
+
+  it("a dev thread still takes no photo, and its refusal no longer claims groups are excluded", async () => {
+    const pin = await pinToken();
+    const dev = await prisma.hubThread.create({ data: { kind: "dev", title: `${TAG} Dev photos` } });
+    const refused = await crmUp(pin, dev.id);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe("Photos go on a job, Team, Training or group thread, not here.");
   });
 });
 
