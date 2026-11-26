@@ -51,7 +51,7 @@ import { sendCustomerEmail } from "../src/services/transactionalEmail";
 import { runAsRehearsal, inRehearsal, REHEARSAL_CARD_LINE, REHEARSAL_RESULT_LINE, REHEARSAL_SKIPPED } from "../src/services/rehearsal";
 import { cancelJob, rescheduleJob, scheduleJob } from "../src/services/scheduling";
 import { ensureThreadFor, type HubReader } from "../src/services/hub";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { approveMessage } from "../src/services/hubApproval";
 import { approvalCardFor } from "../src/services/hubCards";
 
@@ -192,8 +192,8 @@ describe("the Messages hub on a test account's thread", () => {
   it("an approved email and an approved text settle as sent with nothing sent, the card says so before and after, and the texting switch does not hold it", async () => {
     const a = await account(true);
     const thread = await ensureThreadFor({ customerId: a.customer.id });
-    const { message: email } = await createDraftMessage(AI, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday morning." });
-    const { message: text } = await createDraftMessage(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works." });
+    const { message: email } = await waitingDraft(AI, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday morning." });
+    const { message: text } = await waitingDraft(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works." });
 
     const before = await approvalCardFor(KYLE, text.id);
     expect(before.chip).toEqual({ tone: "internal", text: REHEARSAL_CARD_LINE });
@@ -218,7 +218,7 @@ describe("the Messages hub on a test account's thread", () => {
     process.env.HUB_SMS_OUTBOUND_ENABLED = "on";
     const a = await account(false);
     const thread = await ensureThreadFor({ customerId: a.customer.id });
-    const { message: text } = await createDraftMessage(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works." });
+    const { message: text } = await waitingDraft(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works." });
     const card = await approvalCardFor(KYLE, text.id);
     expect(JSON.stringify(card.effectLines) + card.chip.text).not.toContain("Test account");
     const done = await approveMessage(KYLE, text.id);

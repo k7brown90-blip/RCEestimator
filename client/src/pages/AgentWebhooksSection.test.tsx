@@ -17,7 +17,7 @@ import {
 import { api } from "../lib/api";
 import type { AgentWebhooksResponse, AgentWebhooksSave, AgentWebhooksValue } from "../lib/types";
 import { AI_ADMIN_SESSION, OWNER_NO_GRANT, PIN_SESSION } from "../test/sessions";
-import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS, WEBHOOK_VERIFY_RECIPE } from "../../../shared/hub/events";
+import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS, WEBHOOK_VERIFY_RECIPE, isFanOutEventType } from "../../../shared/hub/events";
 
 let watcher: MutationObserver | null = null;
 beforeEach(() => { watcher = null; });
@@ -78,7 +78,8 @@ describe("AgentWebhooksSection for Kyle", () => {
     await waitFor(() => expect(screen.getByTestId("webhook-address-admin").textContent).toBe(NO_ADDRESS_TEXT));
     expect(NO_ADDRESS_TEXT).toBe("No address — the agent will poll");
     expect(screen.getByTestId("webhook-address-inventory").textContent).toBe(NO_ADDRESS_TEXT);
-    for (const type of HUB_EVENT_TYPES.filter((t) => t !== "message.team")) {
+    // Kyle 2026-11-24: the two pricebook.* events are fan-out too (every other key with pricebook:read), so they are not in the table either.
+    for (const type of HUB_EVENT_TYPES.filter((t) => !isFanOutEventType(t))) {
       const select = screen.getByLabelText(`Where ${type} goes`) as HTMLSelectElement;
       expect(select.value).toBe(type === "material.used" ? "inventory" : "admin");
       // Every agent with a webhook can be pointed at, not only Admin and Inventory.

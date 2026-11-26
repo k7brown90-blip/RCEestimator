@@ -48,7 +48,8 @@
  * ── BUILT ONCE, SERVED FROM MEMORY (D3, 2026-10-13) ────────────────────────────────────────────
  *
  * Three engine runs per item (nine-plus for a built row) on every Today load of every phone would
- * be waste: the sheet depends on exactly three tables, so a cheap stamp over them (row counts and
+ * be waste: the sheet depends on exactly three tables plus the Settings -> Purchasing sales tax
+ * setting (its `updatedAt` is in the stamp), so a cheap stamp over them (row counts and
  * the newest `lastSeenAt` of the catalog and Rate Config; the count and value sums of supplier
  * prices, which carry no timestamp) decides whether the sheet in memory still describes the book.
  * The stamp moves on any Prisma write to those tables, the sheet is rebuilt, and `{unchanged}` is
@@ -192,15 +193,19 @@ function sheetVersion(sheet: Omit<PhonePriceSheet, "version" | "generatedAt">): 
  * their three money columns stand in — an edit to any one price moves a sum.
  */
 async function bookStamp(prisma: PrismaClient): Promise<string> {
-  const [rate, atomics, prices] = await Promise.all([
+  const [rate, atomics, prices, purchasing] = await Promise.all([
     prisma.priceBookRateConfig.aggregate({ _count: { _all: true }, _max: { lastSeenAt: true } }),
     prisma.priceBookAtomic.aggregate({ _count: { _all: true }, _max: { lastSeenAt: true, retiredAt: true } }),
     prisma.priceBookSupplierPrice.aggregate({ _count: { _all: true }, _sum: { unitCost: true, priceAsPrinted: true, packQty: true } }),
+    // The engine reads the sales tax rate live for every supplier-priced sell (Kyle 2026-11-24, "Tax in sell, all items"), so a save of
+    // Settings -> Purchasing moves the stamp whether or not any book row moved with it.
+    prisma.companySetting.findUnique({ where: { key: "purchasing" }, select: { updatedAt: true } }),
   ]);
   return JSON.stringify([
     rate._count._all, rate._max.lastSeenAt?.getTime() ?? 0,
     atomics._count._all, atomics._max.lastSeenAt?.getTime() ?? 0, atomics._max.retiredAt?.getTime() ?? 0,
     prices._count._all, prices._sum.unitCost ?? 0, prices._sum.priceAsPrinted ?? 0, prices._sum.packQty ?? 0,
+    purchasing?.updatedAt?.getTime() ?? 0,
   ]);
 }
 

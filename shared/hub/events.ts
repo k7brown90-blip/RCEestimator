@@ -7,6 +7,8 @@
  * ids, and a templated non-personal summary. Never a name, a link, a phone, an email, an address or any free text - EXCEPT
  * message.team (W2, Kyle 2026-11-23 items 4 and 5, supersedes the ids-only rule for that one type): it also carries the author's first
  * name, the message text (through the one scrub: phones, emails and street addresses are withheld) and the @mentions.
+ * pricebook.item_created and pricebook.change_proposed (Kyle 2026-11-24) also carry the price-book item's own name, category, unit (Kyle 2026-11-25), cost (PRE-TAX) and sell prices, and a proposal's before/after:
+ * the price book holds no customer data.
  *
  * THE WIRE BODY (W2, Kyle 2026-11-23: "put the signature AND timestamp in both the headers and inside the JSON body"). Every event
  * type, test.ping included, is POSTed as the stored payload JSON with two members appended as its LAST two:
@@ -27,6 +29,8 @@ export const HUB_EVENT_TYPES = [
   "lead.web_chat",
   "job.completed",
   "material.used",
+  "pricebook.item_created",
+  "pricebook.change_proposed",
 ] as const;
 export type HubEventType = (typeof HUB_EVENT_TYPES)[number];
 
@@ -47,6 +51,8 @@ export const HUB_EVENT_LABELS: Record<HubEventType, string> = {
   "lead.web_chat": "A website-chat lead arrived",
   "job.completed": "A job was marked complete",
   "material.used": "Material was used on a job",
+  "pricebook.item_created": "An agent added an item to the price book",
+  "pricebook.change_proposed": "An agent proposed a price book change",
 };
 
 /**
@@ -74,8 +80,9 @@ export const HUB_WEBHOOK_TARGET_LABELS: Record<HubWebhookTargetId, string> = {
  * Event types whose receivers are decided by the FAN-OUT, not by a route (W2, Kyle 2026-11-23 item 4): every agent whose key can read
  * the thread gets one, so there is nothing to point. They are left out of the "Which agent gets which event" table, and a stored
  * routes[type] for one of them is ignored (and dropped the next time the setting is saved).
+ * pricebook.item_created and pricebook.change_proposed (Kyle 2026-11-24) are fan-out too: every live key with pricebook:read hears them except the key that did it.
  */
-export const FAN_OUT_EVENT_TYPES: readonly HubEventType[] = ["message.team"];
+export const FAN_OUT_EVENT_TYPES: readonly HubEventType[] = ["message.team", "pricebook.item_created", "pricebook.change_proposed"];
 export const isFanOutEventType = (type: string): boolean => (FAN_OUT_EVENT_TYPES as readonly string[]).includes(type);
 
 /** Who gets each event until Kyle changes the table: Admin, except material.used which is the Inventory agent's. */
@@ -92,6 +99,9 @@ export const DEFAULT_EVENT_ROUTES: Record<HubEventType, HubWebhookTargetId> = {
   "lead.web_chat": "admin",
   "job.completed": "admin",
   "material.used": "inventory",
+  // Fan-out types (isFanOutEventType): every other live agent key that can read the price book hears them (services/hubEvents.ts); the route is never read.
+  "pricebook.item_created": "admin",
+  "pricebook.change_proposed": "admin",
 };
 
 /** The delivery states a HubEvent row is in. */

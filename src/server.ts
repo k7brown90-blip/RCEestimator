@@ -7,6 +7,7 @@ import { sendPendingSupplierEmails } from "./services/supplierEmail";
 import { generateInspectionRenewalLeads, generateUpgradeFollowUpLeads } from "./services/inspectionRetention";
 import { deleteExpiredObservations } from "./services/materialPriceObservations";
 import { runMonthlyPriceRefresh } from "./services/priceBookRefresh";
+import { repriceBookForTaxRate } from "./services/priceBookTaxReprice";
 import { sendVisitReminders } from "./services/visitConfirmations";
 import { prisma } from "./lib/prisma";
 import { logSystemEvent } from "./services/systemEvents";
@@ -51,6 +52,20 @@ async function startServer(): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`Red Cedar Estimating API listening on ${port}`);
   });
+
+  // Sales tax inside every sell (Kyle, 2026-11-24 "Tax in sell, all items"; 2026-11-25 "Automatically on deploy"): once, a few seconds after
+  // the server is up (migrations have already run in `npm start`), bring the price book to the sales tax rate saved in Settings if it
+  // is not priced at it yet. Does nothing when the book already matches. With NO rate ever saved it uses Kyle's default 9.75%
+  // ("a company setting (default 9.75%, editable in Settings)"), saves it as the setting in the same transaction and reprices; a saved value that is
+  // not a rate (garbled, or a percent where a fraction belongs) is skipped with a warning, never guessed. One transaction under an advisory lock - a second instance waits and finds nothing to do. Never
+  // blocks HTTP and never throws: a failure is a SystemEvent and the book is exactly as it was.
+  setTimeout(() => {
+    void repriceBookForTaxRate(prisma, { trigger: "startup" }).catch((err) => {
+      logSystemEvent("error", "priceBookTaxReprice", "Start-up price book reprice for the sales tax rate failed - the book is unchanged", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }, 5_000).unref();
 
   // 6:00 PM Central Mon-Fri — daily automation suite
   cron.schedule("0 18 * * 1-5", async () => {

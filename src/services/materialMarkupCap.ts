@@ -50,6 +50,17 @@
  * watched. For a single-scope job the two are identical.
  */
 
+/**
+ * The cost a continuous-length line is measured on by the cap: its material cost WITH sales tax (Kyle, 2026-11-24, "Tax in sell,
+ * all items"), because the sell it is compared with has the tax in it. Null for a line outside the cap. A line frozen before
+ * 2026-11-25 has no tax-in figure and reads its plain materialCost, exactly as it always did. Every site that feeds the cap
+ * (the engine, signing, the issued-figures page, office acceptance) calls this - one definition of the basis.
+ */
+export function capBasisCost(l: { inMaterialCap: boolean; materialCost: number | null; materialCostWithTax?: number | null }): number | null {
+  if (!l.inMaterialCap) return null;
+  return l.materialCostWithTax ?? l.materialCost;
+}
+
 /** One band of the job-level ceiling. `upTo` is exclusive; the last band is open-ended. */
 export interface MarkupBand {
   upTo: number | null;

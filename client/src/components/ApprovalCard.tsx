@@ -32,7 +32,7 @@ import { refreshHub } from "../lib/hubQueries";
 import { messageStatusChip, whenText } from "../lib/hubLabels";
 import type { HubDecision } from "../lib/types";
 import type { ApprovalCardView } from "../../../shared/hub/views";
-import { REJECT_FIRST_HINT, REJECT_REASON_MIN, cardLocks, isActionable, isOpenCard } from "../../../shared/hub/approvalRules";
+import { REJECT_FIRST_HINT, REJECT_REASON_MIN, approvingLabel, cardLocks, isActionable, isOpenCard } from "../../../shared/hub/approvalRules";
 import { DeliveryChip } from "./DeliveryChip";
 import { SendToPicker } from "./SendToPicker";
 
@@ -259,7 +259,7 @@ export function ApprovalCard({
       {actionable && mode === "view" && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button type="button" className="btn btn-primary text-xs" disabled={Boolean(lock) || busy} title={lock ?? undefined} onClick={onApprove}>
-            {approve.isPending ? "Sending…" : retry}
+            {approve.isPending ? approvingLabel(card) : retry}
           </button>
           {card.status === "pending_approval" && (
             <button
@@ -275,8 +275,8 @@ export function ApprovalCard({
           <button
             type="button"
             className="btn btn-danger text-xs"
-            disabled={!canApprove || busy}
-            title={!canApprove ? lockText : "Reject this draft with a reason; nothing is sent"}
+            disabled={Boolean(rejectLock) || busy}
+            title={rejectLock ? lockText : "Reject this draft with a reason; nothing is sent"}
             onClick={() => { setReason(""); setMode("reject"); }}
           >
             Reject

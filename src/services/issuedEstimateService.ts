@@ -40,7 +40,7 @@ import { FIELD_SIGNED_REVISE_REASON } from "../../shared/draftLifecycle";
 import { sendBrandedEmail, escapeHtml } from "./confirmationEmail";
 import { checkSignatureImage } from "./signatureImage";
 import { logSystemEvent } from "./systemEvents";
-import { bandsFrom, selectionCap, type MarkupBand } from "./materialMarkupCap";
+import { bandsFrom, capBasisCost, selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { frozenSelectionDiscount, programmeFor } from "./discounts";
 import { snapshotActiveFinancingPlansJson } from "./financingSettings";
 import { notifyOwnerViewed } from "./issuedEstimateSend";
@@ -201,6 +201,7 @@ export async function graduateDraft(
     laborHours: number | null;
     materialSell: number | null;
     materialCost: number | null;
+    materialCostWithTax: number | null;
     /** Kyle's flat book price — informational, for the company copy. */
     flatPriced: boolean;
     /** Continuous-length material — the only lines the combination discount reads (2026-08-31). */
@@ -272,6 +273,8 @@ export async function graduateDraft(
       // E — what it costs Red Cedar. Kyle tracks spending against this, so it is frozen with the
       // rest rather than re-derived later from a catalog that will have moved on.
       materialCost: l.materialCost,
+      // Frozen with it: the cost WITH sales tax, the basis the material cap measured at issue (capBasisCost) - signing re-reads it.
+      materialCostWithTax: l.materialCostWithTax ?? null,
       flatPriced: l.flatPriced,
       // Frozen so the cap's scope at signing never depends on the live catalog's descriptions.
       inMaterialCap: l.inMaterialCap,
@@ -1089,10 +1092,10 @@ async function applySignature(
   // engine used at issue, read off the frozen flag.
   const frozenLines = (await prisma.issuedEstimateLine.findMany({
     where: { estimateId },
-    select: { option: true, materialCost: true, materialSell: true, inMaterialCap: true },
+    select: { option: true, materialCost: true, materialCostWithTax: true, materialSell: true, inMaterialCap: true },
   })).map((l) => ({
     option: l.option,
-    materialCost: l.inMaterialCap ? l.materialCost : null,
+    materialCost: capBasisCost(l),
     materialSell: l.inMaterialCap ? l.materialSell : null,
   }));
   /*

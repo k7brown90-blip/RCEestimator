@@ -10,12 +10,14 @@
  * Mounted behind the operator PIN session like every other CRM route (app.use(pinAuthMiddleware)
  * in app.ts runs before any router is registered) — nothing here is a webhook or agent surface.
  *
- * THE AI ADMIN'S SEND IS A DRAFT (work order agent-team, U4b, default D2): when the session is the AI admin, this
- * same route does not send. It leaves the email as a message waiting for approval on the record's customer
- * conversation (services/hubDrafts.ts createDraftMessage, the ONE draft door), carrying exactly the To and CC the
- * panel chose; Kyle (or a login holding approve_drafts) sends it from Messages -> Needs approval, and the send is
- * hubSend's email branch - the very sendRecordMessage below. Kyle's session and every other office login send
- * directly, as before. The structured kinds on /customer-emails are not touched.
+ * THE AI ADMIN'S SEND GOES OUT (Kyle 2026-11-24: "We are submitting direct requests to these agents which implies approval to all
+ * that they are reqested to do in the CRM", which replaces the U4b rule that left it waiting for approval): when the session is the AI
+ * admin, this same route sends the email through the ONE agent send (services/hubDrafts.ts createDraftMessage -> services/hubAgentSend.ts
+ * sendAgentMessageNow -> hubSend's email branch - the very sendRecordMessage below), carrying exactly the To and CC the panel chose. The
+ * message is recorded on the record's customer conversation as sent by "AI admin" with its audit row. Every guard still applies: Agent
+ * access must be On, the address must not have unsubscribed. A guard that refuses answers 409 with the reason and the conversation shows the
+ * message as not sent; nothing waits for approval. Kyle's session and every other office login send directly, as before. The structured
+ * kinds on /customer-emails are not touched.
  */
 
 import express from "express";
@@ -55,7 +57,7 @@ communicationsRouter.post("/communications/email", asyncHandler(async (req, res)
 
   const reader = readerFor(req);
   if (reader?.kind === "ai-admin") {
-    // The same refusals as a send (no record, no address), then a draft instead of a send.
+    // The same refusals as a send (no record, no address), then the one agent send (recorded in the conversation as sent by the AI admin).
     const recipients = await resolveRecordRecipients(target, parsed.to?.trim() || null, parsed.cc);
     if (!recipients.ok) {
       res.status(recipients.status).json({ error: recipients.error });
@@ -67,15 +69,19 @@ communicationsRouter.post("/communications/email", asyncHandler(async (req, res)
           : target.kind === "account" ? { customerId: target.customerId }
             : { customerId: recipients.customerId as string },
       );
-      const { message } = await createDraftMessage(reader, {
+      const { message, sent, notSentReason } = await createDraftMessage(reader, {
         threadId: thread.id, channel: "email", category: "thread_reply",
         subject: parsed.subject, body: parsed.body, toAddress: recipients.to, cc: recipients.cc,
         visitId: target.kind === "job" ? target.visitId : null, issuedEstimateId: parsed.estimateId ?? null,
       });
-      res.json({ sent: false, drafted: true, messageId: message.id, to: recipients.to, cc: recipients.cc, suppressed: false });
+      if (!sent) {
+        res.status(409).json({ error: notSentReason ?? "The email was not sent.", sent: false, messageId: message.id });
+        return;
+      }
+      res.json({ sent: true, drafted: false, messageId: message.id, to: recipients.to, cc: recipients.cc, suppressed: false });
     } catch (err) {
       if (err instanceof HubError) {
-        res.status(err.status).json({ error: err.message });
+        res.status(err.status).json(err.status === 429 ? { error: err.message, sent: false } : { error: err.message });
         return;
       }
       throw err;

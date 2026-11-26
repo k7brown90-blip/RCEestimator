@@ -41,7 +41,7 @@ import { expiredRefusal, officeAcceptanceBlock } from "../../shared/officeAccept
 import { reopenedStatusOf } from "./estimateExpiry";
 import { adoptSupersededInvoice, type AdoptedInvoice } from "./issuedEstimateService";
 import { LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER } from "./invoiceGroup";
-import { selectionCap, type MarkupBand } from "./materialMarkupCap";
+import { capBasisCost, selectionCap, type MarkupBand } from "./materialMarkupCap";
 import { frozenSelectionDiscount } from "./discounts";
 import { logSystemEvent } from "./systemEvents";
 import { emitHubEventSafe } from "./hubEvents";
@@ -158,10 +158,10 @@ export async function acceptEstimateFromOffice(
   */
   const frozenLines = (await prisma.issuedEstimateLine.findMany({
     where: { estimateId },
-    select: { option: true, materialCost: true, materialSell: true, inMaterialCap: true },
+    select: { option: true, materialCost: true, materialCostWithTax: true, materialSell: true, inMaterialCap: true },
   })).map((l) => ({
     option: l.option,
-    materialCost: l.inMaterialCap ? l.materialCost : null,
+    materialCost: capBasisCost(l),
     materialSell: l.inMaterialCap ? l.materialSell : null,
   }));
   const frozenBands = est.jobBandsJson ? (JSON.parse(est.jobBandsJson) as MarkupBand[]) : undefined;

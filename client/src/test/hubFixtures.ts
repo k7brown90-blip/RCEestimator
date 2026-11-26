@@ -19,7 +19,7 @@ export const messageEntry = (over: Partial<TimelineMessage> = {}, visitId: strin
   const message: TimelineMessage = {
     id: "msg-1", threadId: "thread-1", authorType: "ai_agent", authorDisplay: "RCE Admin", channel: "in_app", direction: "internal",
     status: "pending_approval", subject: null, body: "Draft: confirming Tuesday.", toAddress: null, toMasked: null, messageClass: null, error: null, deleted: false,
-    deletedBy: null, deletedReason: null, editedAt: null, createdAt: "2026-11-20T15:00:00.000Z", sentAt: null, emailDelivery: null, ...over,
+    deletedBy: null, deletedReason: null, editedAt: null, createdAt: "2026-11-20T15:00:00.000Z", sentAt: null, emailDelivery: null, sentDirectly: false, ...over,
   };
   return { type: "message", id: `message:${message.id}`, at: message.createdAt, visitId, jobLabel: null, message };
 };
@@ -36,7 +36,7 @@ export const threadsResponse = (threads: ThreadRow[] = [], over: Partial<Threads
 export const threadMessage = (over: Partial<ThreadMessage> = {}): ThreadMessage => ({
   id: "m-1", authorType: "tech", authorDisplay: "Eric", channel: "in_app", direction: "internal", status: "posted", subject: null,
   body: "On site, panel is open.", toAddress: null, toMasked: null, messageClass: null, error: null, deleted: false, deletedBy: null, deletedReason: null, editedAt: null,
-  createdAt: "2026-11-20T15:00:00.000Z", mine: false, canEdit: false, canDelete: false, attachments: [], photoIds: [], ...over,
+  createdAt: "2026-11-20T15:00:00.000Z", mine: false, canEdit: false, canDelete: false, attachments: [], photoIds: [], sentDirectly: false, ...over,
 });
 
 export const threadDetail = (messages: ThreadMessage[] = [], over: Partial<ThreadRow> = {}, lastReadAt: string | null = null): ThreadDetail => ({

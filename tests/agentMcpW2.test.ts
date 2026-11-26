@@ -7,7 +7,7 @@
  *   - the door: no bearer 401, a session PIN token / a technician token 401, a revoked key 401, GET and DELETE 405 JSON (never index.html, even with
  *     Accept text/html), the /api prefix works, stateless (no session id issued), nothing about /mcp is public;
  *   - the hub tools are the SAME code as REST: list_threads / read_thread / post_message answer exactly what REST answers for the same key; a Team post is
- *     posted, a customer draft is pending_approval with its reason, Research / CFO / NEC Coach are refused on a customer thread with the scope + label
+ *     posted, a customer message is SENT (Kyle 2026-11-24, no check-ins), Research / CFO / NEC Coach are refused on a customer thread with the scope + label
  *     sentence, an idempotent replay returns the same message id (through MCP, and across MCP and REST), the 8-in-a-row agent limit applies, and the writes
  *     switch and the kill switch are checked inside the tool;
  *   - Research and CFO read tools: ids, status, dates, money and a first name only (a fixture that has phone, email, street, last name, notes, titles,
@@ -124,7 +124,11 @@ const auditRows = (keyId: string) => prisma.agentAuditLog.findMany({ where: { ag
 
 const logLines: string[] = [];
 
+// Plan P7 keeps the server-side switch for an AI's customer send (AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND, default-deny): on for this file's direct sends.
+let savedAgentSendGate: string | undefined;
 beforeAll(async () => {
+  savedAgentSendGate = process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND;
+  process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND = "on";
   savedPin = process.env.PIN_HASH;
   savedPepper = process.env.AGENT_KEY_PEPPER;
   savedEnvName = process.env.RAILWAY_ENVIRONMENT_NAME;
@@ -230,6 +234,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (savedAgentSendGate === undefined) delete process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND; else process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND = savedAgentSendGate;
   vi.restoreAllMocks();
   if (savedPin === undefined) delete process.env.PIN_HASH; else process.env.PIN_HASH = savedPin;
   if (savedPepper === undefined) delete process.env.AGENT_KEY_PEPPER; else process.env.AGENT_KEY_PEPPER = savedPepper;
@@ -300,11 +305,14 @@ describe("Kyle's MCP column: initialize, tools/list and whoami for the nine role
     const inventory = await keyFor("inventory");
     const namesOf = async (k: Made) => ((await rpc(k.secret, "tools/list", {})).body.result.tools as Array<{ name: string }>).map((t) => t.name).sort();
     const everyone = ["list_threads", "post_message", "read_thread", "whoami"];
-    expect(await namesOf(research)).toEqual([...everyone, "get_invoice", "get_job", "lead_source_counts", "list_invoices", "list_jobs", "list_visits"].sort());
-    expect(await namesOf(cfo)).toEqual([...everyone, "get_invoice", "get_job", "list_invoices", "list_jobs", "list_payments"].sort());
-    expect(await namesOf(inventory)).toEqual(everyone);
-    // No write tool exists for Research or CFO beyond the hub post.
-    expect(AGENT_TOOLS.filter((t) => t.write).map((t) => t.name)).toEqual(["post_message"]);
+    // Kyle 2026-11-24: every role but Other reads the price book (three read tools); Inventory also holds pricebook:write (create and propose).
+    const priceRead = ["get_price_book_item", "list_price_book_categories", "search_price_book"];
+    expect(await namesOf(research)).toEqual([...everyone, ...priceRead, "get_invoice", "get_job", "lead_source_counts", "list_invoices", "list_jobs", "list_visits"].sort());
+    expect(await namesOf(cfo)).toEqual([...everyone, ...priceRead, "get_invoice", "get_job", "list_invoices", "list_jobs", "list_payments"].sort());
+    expect(await namesOf(inventory)).toEqual([...everyone, ...priceRead, "create_price_book_item", "propose_price_book_change"].sort());
+    // No write tool exists for Research or CFO beyond the hub post (they hold no pricebook:write). The only write tools are the hub post and the
+    // two price-book writes, which ADD a new item or PROPOSE a change; there is no delete, retire or direct-edit tool (tests/agentPriceBook.test.ts).
+    expect(AGENT_TOOLS.filter((t) => t.write).map((t) => t.name)).toEqual(["post_message", "create_price_book_item", "propose_price_book_change"]);
   });
 
   it("whoami's request count goes down as the key is used", async () => {
@@ -451,14 +459,16 @@ describe("list_threads, read_thread and post_message give what REST gives", () =
     expect(Object.keys(rest.body).sort()).toEqual(Object.keys(res.body).sort());
   });
 
-  it("a customer draft through MCP is pending_approval with a plain reason, and nothing is sent", async () => {
+  // Kyle 2026-11-24 ("requiring them to check-in on everything defeats the purpose"): this pinned pending_approval + a pending_reason. It is sent.
+  it("a customer message through MCP is SENT like REST (no approval step), and still uses one of the day's 500 slots", async () => {
     const k = await keyFor("admin");
     const res = await tool(k.secret, "post_message", {
       customerId, channel: "email", subject: "Your quote", body: "Hello, your panel quote is ready to review.", idempotency_key: idem(),
     });
     expect(res.isError, res.text).toBe(false);
-    expect(res.body.status).toBe("pending_approval");
-    expect(res.body.pending_reason).toEqual(expect.any(String));
+    expect(res.body.status).toBe("sent");
+    expect(res.body.pending_reason).toBeNull();
+    expect(res.body.not_sent_reason).toBeNull();
     const who = await tool(k.secret, "whoami");
     expect(who.body.customer_drafts_left_today).toBe(AGENT_DAILY_DRAFT_LIMIT - 1);
   });

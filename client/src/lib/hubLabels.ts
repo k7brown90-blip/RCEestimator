@@ -75,6 +75,19 @@ export function authorLabel(authorType: string, display: string): string {
   return display;
 }
 
+/**
+ * The line that says an AI sent this email or text to the customer by itself (Kyle 2026-11-24: an agent's request is the approval, so there is
+ * no Approve step): "Sent by RCE Admin (AI), no approval step". Null for anything else - a person's message, an AI's in-app post, or an AI
+ * message that was not sent (it carries its own chip and reason).
+ */
+export function aiSentLine(message: { authorType: string; authorDisplay: string; status: string; channel: string; sentDirectly: boolean }): string | null {
+  // Only a message the agent sent on its own request: one a person approved (all history before agents sent directly, an old card approved since)
+  // is not "no approval step", and the screen must not contradict the Message audit log.
+  if (!isAiAuthor(message.authorType) || message.status !== "sent" || !message.sentDirectly) return null;
+  if (message.channel !== "email" && message.channel !== "sms") return null;
+  return `Sent by ${authorLabel(message.authorType, message.authorDisplay)}, no approval step`;
+}
+
 /** The compose button on a thread, by kind: "Post to crew" on a job, "Post to team" on a Team thread. */
 export function postButtonLabel(kind: string): string {
   if (kind === "job") return "Post to crew";

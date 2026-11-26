@@ -343,7 +343,7 @@ export const AGENT_KEY_ROUTES: AgentKeyRoute[] = [
     // 500 a day (the door reserves a slot and records madeDraft only for those, so the route itself is a plain write); a Team, group or
     // crew post does not count. Both need the key's writes switch and a kill switch that is not read_only.
     methods: ["POST"], path: "/hub/messages", scope: hubRouteScopes("post"), write: true, tool: "hub.messages.draft",
-    reason: "K-U7 + W2: an agent leaves a DRAFT to a customer (never approved or sent without a person or an owner rule) or a post in a Team, group or crew chat (published at once when its key's Team posts publish immediately box is ticked).",
+    reason: "K-U7 + W2 + Kyle 2026-11-24 (no check-ins): an agent's email or text to a customer is SENT when posted, through the kill switch, the key's Allow writes, consent and unsubscribe, the channel's env gate and the 500-a-day cap (services/hubAgentSend.ts); a post in a Team, group or crew chat is published at once when its key's Team posts publish immediately box is ticked; a Training post is published.",
   },
   {
     // W2-B: the agents' MCP door. agentOnly, so pinAuth hands EVERY /mcp request (key or not) to the one gate: no bearer, a session token,
@@ -351,7 +351,31 @@ export const AGENT_KEY_ROUTES: AgentKeyRoute[] = [
     // "any": whoami needs none, and each tool checks its own any-of list, writes switch and kill switch per call (src/agentApi/registry.ts).
     // Stateless (team answer 12): POST carries the JSON-RPC call; GET and DELETE are answered 405 by the handler (src/mcp/agentServer.ts).
     methods: ["GET", "POST", "DELETE"], path: "/mcp", scope: "any", agentOnly: true, tool: "mcp",
-    reason: "W2-B: the agents' stateless MCP door (whoami, the hub tools and the Research and CFO read tools); every tool call is audited.",
+    reason: "W2-B: the agents' stateless MCP door (whoami, the hub tools, the price-book tools and the Research and CFO read tools); every tool call is audited.",
+  },
+  // Kyle 2026-11-24: the PRICE BOOK door (src/routes/agentPriceBook.ts, cores in src/agentApi/priceBookDoor.ts). agentOnly: a session token, a
+  // technician token or no credential is a 401 there (the one agent gate), and none of it is public. Reads need pricebook:read, the two writes
+  // pricebook:write AND the key's Allow writes switch. There is deliberately NO delete, retire, archive or edit entry: an agent adds NEW items and
+  // PROPOSES changes (a card a person approves). Never list one.
+  {
+    methods: ["GET"], path: "/agent/price-book/categories", scope: ["pricebook:read"], agentOnly: true, tool: "pricebook.categories",
+    reason: "Kyle 2026-11-24: an agent lists the price book's categories and their counts.",
+  },
+  {
+    methods: ["GET"], path: "/agent/price-book/items", scope: ["pricebook:read"], agentOnly: true, tool: "pricebook.items.search",
+    reason: "Kyle 2026-11-24: an agent searches the live price book (?search=&category=): cost (PRE-TAX), hours per unit and sell prices.",
+  },
+  {
+    methods: ["GET"], path: "/agent/price-book/items/:id", scope: ["pricebook:read"], agentOnly: true, tool: "pricebook.items.get",
+    reason: "Kyle 2026-11-24: an agent reads one price book item, with an assembly's parts.",
+  },
+  {
+    methods: ["POST"], path: "/agent/price-book/items", scope: ["pricebook:write"], write: true, agentOnly: true, tool: "pricebook.items.create",
+    reason: "Kyle 2026-11-24: an agent adds a NEW item (labor, material or assembly), idempotent, refused when its name nearly duplicates one in the same category. Never an edit.",
+  },
+  {
+    methods: ["POST"], path: "/agent/price-book/items/:id/proposals", scope: ["pricebook:write"], write: true, agentOnly: true, tool: "pricebook.items.propose",
+    reason: "Kyle 2026-11-24: an agent proposes a price, hours or name change to an EXISTING item; nothing changes until a person approves the card in Messages.",
   },
 ];
 

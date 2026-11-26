@@ -55,7 +55,7 @@
  * `no_target` (kept, never retried by the worker) until Resend finds an address.
  */
 import { createHmac, randomUUID } from "node:crypto";
-import type { HubEvent, HubEventAttempt, Prisma, PrismaClient } from "@prisma/client";
+import type { HubEvent, HubEventAttempt, PriceBookAtomic, Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { toChicagoIso } from "../../shared/calendarDay";
 import { normalizeLeadPlatform } from "../../shared/leadPlatform";
@@ -76,6 +76,8 @@ import { announceDecision } from "./hubBus";
 import { AI_ADMIN_SUB } from "./adminLogin";
 import { getPrincipalLogin } from "./crmLogin";
 import { logSystemEvent } from "./systemEvents";
+import { isAssemblyRowType } from "./priceBookAssembly";
+import { parsePriceChangePayload } from "./priceBookProposalPayload";
 
 let deliveryTimeoutMs = 10_000;
 /** Tests only: how long one attempt waits for the receiver before it counts as a timeout. */
@@ -110,7 +112,11 @@ export type EmitInput =
   | { type: "payment.received"; paymentId: string }
   | { type: "lead.created" | "lead.web_chat"; leadId: string }
   | { type: "job.completed"; visitId: string }
-  | { type: "material.used"; jobId: string; movementIds: readonly string[]; truckId?: string | null };
+  | { type: "material.used"; jobId: string; movementIds: readonly string[]; truckId?: string | null }
+  // Kyle 2026-11-24 (price book for agents). Fan-out types: every OTHER live key that holds pricebook:read hears them (emitPriceBookEvents).
+  // `authorKeyId` is the AgentKey that did it, so it is never woken by its own write.
+  | { type: "pricebook.item_created"; itemId: string; authorKeyId: string }
+  | { type: "pricebook.change_proposed"; proposalId: string; authorKeyId: string };
 
 type Fields = Record<string, unknown>;
 interface Built { fields: Fields; summary: string }
@@ -248,7 +254,50 @@ async function build(input: EmitInput, db: PrismaClient): Promise<Built> {
         summary: `Material used on a job, ${input.movementIds.length} line${input.movementIds.length === 1 ? "" : "s"}`,
       };
     }
+    case "pricebook.item_created": {
+      const item = await db.priceBookAtomic.findUnique({ where: { itemId: input.itemId } });
+      if (!item) throw new HubEventError("Price book item not found", 404);
+      return { fields: priceBookItemFields(item), summary: "Price book item added" };
+    }
+    case "pricebook.change_proposed": {
+      const card = await db.hubMessage.findUnique({ where: { id: input.proposalId }, select: { id: true, actionPayloadJson: true } });
+      const proposal = card ? parsePriceChangePayload(card.actionPayloadJson) : null;
+      if (!card || !proposal) throw new HubEventError("Price change proposal not found", 404);
+      const item = await db.priceBookAtomic.findUnique({ where: { itemId: proposal.itemId } });
+      if (!item) throw new HubEventError("Price book item not found", 404);
+      // Before: what the item holds now. After: what is proposed. Hours are PER UNIT (a stored value is per laborUnitDivisor units).
+      const divisor = item.laborUnitDivisor !== null && item.laborUnitDivisor > 0 ? item.laborUnitDivisor : 1;
+      const unitHours = (v: number | null | undefined): number | null => (v === null || v === undefined ? null : Math.round((v / divisor) * 1_000_000) / 1_000_000);
+      const before: Fields = {};
+      const after: Fields = {};
+      const p = proposal.proposed;
+      if (p.description !== undefined) { before.name = item.description; after.name = p.description; }
+      if (p.companyCost !== undefined) { before.cost = item.companyCost; after.cost = p.companyCost; }
+      if (p.laborNormal !== undefined) { before.hours_normal = unitHours(item.laborNormal); after.hours_normal = unitHours(p.laborNormal); }
+      if (p.laborDifficult !== undefined) { before.hours_difficult = unitHours(item.laborDifficult); after.hours_difficult = unitHours(p.laborDifficult); }
+      if (p.laborVeryDifficult !== undefined) { before.hours_very_difficult = unitHours(item.laborVeryDifficult); after.hours_very_difficult = unitHours(p.laborVeryDifficult); }
+      return {
+        fields: { proposal_id: card.id, proposed_by: proposal.keyName, ...priceBookItemFields(item), before, after },
+        summary: "Price book change proposed",
+      };
+    }
   }
+}
+
+/** The price-book item as an event carries it: ids, the item's own words and its numbers. The price book holds no customer data. Cost is PRE-TAX. */
+function priceBookItemFields(item: PriceBookAtomic): Fields {
+  return {
+    item_id: item.itemId,
+    name: item.description,
+    category: item.category,
+    // The unit the item is priced per (Kyle 2026-11-25): cost and hours are per this unit. Same value the read profile calls `unit`.
+    unit: item.unitLabel ?? item.unit,
+    // item_type, not type: `type` is the event's own and the item's must not overwrite it.
+    item_type: isAssemblyRowType(item.rowType) ? "assembly" : (item.rowType ?? "").toUpperCase().includes("LABOR ONLY") ? "labor" : "material",
+    cost: item.companyCost,
+    cost_with_tax: item.companyCostWithTax,
+    sell: { normal: item.sellNormal, difficult: item.sellDifficult, very_difficult: item.sellVeryDifficult },
+  };
 }
 
 // ── targets ──────────────────────────────────────────────────────────────────────────────────────
@@ -372,6 +421,8 @@ export function deliveryPartsFor(id: HubWebhookTargetId, settings: AgentWebhooks
  */
 export async function emitHubEvent(input: EmitInput, db: PrismaClient = defaultPrisma, occurredAt: Date = new Date()): Promise<string> {
   const built = await build(input, db);
+  // The price-book types are fan-out: one row per receiving agent, never the author (below).
+  if (input.type === "pricebook.item_created" || input.type === "pricebook.change_proposed") return emitPriceBookEvents(input, built, db, occurredAt);
   const settings = await getAgentWebhooks(db);
   const targetId = targetIdFor(input.type, settings);
   const target = resolveTarget(targetId, settings);
@@ -562,6 +613,75 @@ export async function emitTeamMessageEvents(
     if (r.reachable) void deliverEvent(r.data.id, db).catch((err) => logSystemEvent("error", "agent_events", `Immediate delivery failed: ${errorLabel(err)}`));
   }
   return rows.map((r) => r.data.id);
+}
+
+// ── the price-book fan-out (Kyle 2026-11-24 item 5: "Fire webhook events pricebook.item_created and pricebook.change_proposed to subscribed agents") ──
+
+/** The shared key of one price-book event: the same item or proposal always gets the same key, so announcing it twice cannot write it twice. */
+export const priceBookEventKey = (type: string, subjectId: string): string => `${type}:${subjectId}`;
+
+/**
+ * The agent roles that hear of a price-book event: every role with a live key (activeKeyWhere, this deployment's environment) that holds
+ * pricebook:read, and has a webhook target, EXCEPT the role of the key that did it (no self-wake: the loop guard message.team has). In the order
+ * the Agent webhooks card lists the agents.
+ */
+export async function priceBookReceivingRoles(
+  authorKeyId: string, db: PrismaClient = defaultPrisma, now: Date = new Date(),
+): Promise<HubWebhookTargetId[]> {
+  const keys = await db.agentKey.findMany({
+    where: { ...activeKeyWhere(now), environment: currentAgentEnvironment(), agentRole: { in: [...HUB_WEBHOOK_TARGET_IDS] } },
+    select: { id: true, agentRole: true, scopes: true },
+  });
+  const author = await db.agentKey.findUnique({ where: { id: authorKeyId }, select: { agentRole: true } });
+  const roles = new Set(keys.filter((k) => k.scopes.includes("pricebook:read")).map((k) => k.agentRole));
+  if (author) roles.delete(author.agentRole);
+  return HUB_WEBHOOK_TARGET_IDS.filter((id) => roles.has(id));
+}
+
+/**
+ * Write one HubEvent row per receiving role for a price-book event, all sharing one eventKey, each signed and delivered exactly like every other
+ * event (the stored payloadJson, the per-agent secret, the timestamp and signature spliced into the wire body at send time). The payload is the item's
+ * ids, its words and its numbers (the price book holds no customer data): see build(). A role with no address, or turned Off, gets its row as
+ * `no_target`; nothing is dropped silently. Called ONLY for a new item or a new proposal, after the transaction that made it committed, and never
+ * for an idempotent replay. Returns the first event id, or the event key when nobody hears it.
+ */
+async function emitPriceBookEvents(
+  input: Extract<EmitInput, { type: "pricebook.item_created" | "pricebook.change_proposed" }>, built: Built, db: PrismaClient, occurredAt: Date,
+): Promise<string> {
+  const subjectId = input.type === "pricebook.item_created" ? input.itemId : input.proposalId;
+  const eventKey = priceBookEventKey(input.type, subjectId);
+  const receivers = await priceBookReceivingRoles(input.authorKeyId, db, occurredAt);
+  if (receivers.length === 0) return eventKey;
+  const settings = await getAgentWebhooks(db);
+  const secrets = await loadSecretValues();
+  const rows = receivers.map((role) => {
+    const id = randomUUID();
+    const target = resolveTarget(role, settings);
+    const reachable = Boolean(target.url) && target.enabled;
+    const body = scrub({ ...built.fields, summary: built.summary }, { withholdContact: false, secrets });
+    const payload = { event_id: id, type: input.type, occurred_at: toChicagoIso(occurredAt), ...body };
+    return {
+      reachable,
+      data: {
+        id, eventKey, type: input.type, payloadJson: JSON.stringify(payload), target: role,
+        status: reachable ? "pending" : "no_target",
+        nextAttemptAt: reachable ? occurredAt : null,
+        lastError: reachable ? null : noTargetReason(target),
+      },
+    };
+  });
+  const wrote = await db.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${eventKey}))`;
+    if ((await tx.hubEvent.count({ where: { eventKey } })) > 0) return false;
+    await tx.hubEvent.createMany({ data: rows.map((r) => r.data) });
+    return true;
+  });
+  if (wrote) {
+    for (const r of rows) {
+      if (r.reachable) void deliverEvent(r.data.id, db).catch((err) => logSystemEvent("error", "agent_events", `Immediate delivery failed: ${errorLabel(err)}`));
+    }
+  }
+  return rows[0]!.data.id;
 }
 
 /** The call fanOutMessage makes, as `void emitTeamMessageEventsSafe({...})` after the message is committed. Never throws. */

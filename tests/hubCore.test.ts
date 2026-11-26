@@ -115,8 +115,8 @@ describe("the send-type registry", () => {
 
   it("flags a broken registry (a transactional entry with no purpose, a review entry)", () => {
     const bad = [
-      { key: "x", label: "x", messageClass: "transactional", purposeKey: null, footer: "first", autoSendEligible: false },
-      { key: "review_request", label: "r", messageClass: "internal", purposeKey: null, footer: "never", autoSendEligible: false },
+      { key: "x", label: "x", messageClass: "transactional", purposeKey: null, footer: "first", customerFacing: true },
+      { key: "review_request", label: "r", messageClass: "internal", purposeKey: null, footer: "never", customerFacing: false },
     ] as const;
     const problems = registryProblems(bad as never);
     expect(problems.some((p) => /needs a real purposeKey/.test(p))).toBe(true);

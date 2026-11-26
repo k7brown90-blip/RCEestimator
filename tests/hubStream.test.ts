@@ -49,7 +49,7 @@ import {
 import { announceDecision, hubListenerCount } from "../src/services/hubBus";
 import { HUB_STREAM_TIMING } from "../src/services/hubStream";
 import { techReader } from "../src/services/hubTech";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { saveCrmLogin, setPowers } from "../src/services/crmLogin";
 
 const TAG = "HubStream";
@@ -328,7 +328,7 @@ describe("an approver technician's stream carries the customer-thread events beh
   async function customerDraft() {
     const customer = await prisma.customer.create({ data: { name: `${TAG} Jane`, phone: "6155550101", email: "jane@hubstream.example" } });
     const thread = await ensureThreadFor({ customerId: customer.id });
-    const { message } = await createDraftMessage(ai, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday." });
+    const { message } = await waitingDraft(ai, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday." });
     return { thread, message };
   }
 

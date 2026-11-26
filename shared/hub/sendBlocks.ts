@@ -18,6 +18,15 @@ export const SEND_BLOCK_REASONS = {
   empty_body: "A text needs words.",
   double_brand: "The text already starts with the company name. The header is added for you; take it out of the message.",
   double_footer: "The text already says \"Reply STOP\". The footer is added for you; take it out of the message.",
+  // Kyle 2026-11-24 (agents act without check-ins): an AI's customer message goes out when it is posted, so a guard that
+  // refuses leaves it recorded as NOT SENT with one of these reasons instead of waiting for an Approve.
+  agent_access_off: "Agent access is paused or off (Settings, Agent access), so an AI's message was not sent.",
+  agent_writes_off: "This agent key is revoked or its Allow writes is off (Settings, Agent keys), so its message was not sent.",
+  agent_sends_off: "Automatic customer messages from AI agents are switched off on the server, so this was not sent.",
+  texting_off: "Texting is turned off, so this text was not sent.",
+  no_email: "There is no email address on file to send to.",
+  email_unsubscribed: "That address unsubscribed from email, so nothing was sent.",
+  wrong_channel: "Only an email or a text can be sent to a customer.",
 } as const;
 
 export type SendBlockReason = keyof typeof SEND_BLOCK_REASONS;

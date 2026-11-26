@@ -47,7 +47,7 @@ vi.mock("../src/services/hub", async (orig) => {
 import { prisma } from "../src/lib/prisma";
 import { createMessageRow, ensureThreadFor, type HubReader } from "../src/services/hub";
 import { HubSendRefusal, STALE_SEND_ERROR, STALE_SEND_MS, hubSend, prepareSms, releaseStaleSends } from "../src/services/hubSend";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { approveMessage } from "../src/services/hubApproval";
 
 const TAG = "HubSend";
@@ -129,11 +129,11 @@ async function account(over: { smsConsent?: boolean | null; phone?: string | nul
 
 /** A text draft waiting for approval, made through the draft-create path (so class and purpose are derived). */
 async function textDraft(threadId: string, category = "thread_reply", body = "We can be there Tuesday morning.") {
-  const { message } = await createDraftMessage(AI, { threadId, channel: "sms", category, body });
+  const { message } = await waitingDraft(AI, { threadId, channel: "sms", category, body });
   return message;
 }
 async function emailDraft(threadId: string, over: Record<string, unknown> = {}) {
-  const { message } = await createDraftMessage(AI, { threadId, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday morning.", ...over });
+  const { message } = await waitingDraft(AI, { threadId, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday morning.", ...over });
   return message;
 }
 /** Approve without sending (the first half of Approve), so hubSend can be exercised on its own. */
@@ -377,7 +377,7 @@ describe("hubSend: the text branch (BA7)", () => {
           data: { threadId: t.id, authorType: "customer", authorDisplay: "Unknown", channel: "sms", direction: "inbound", status: "received", body: "Hi", createdAt: new Date(Date.now() - hoursAgoInbound * 3_600_000) },
         });
       }
-      const d = await createDraftMessage(AI, { threadId: t.id, channel: "sms", category: "thread_reply", body: "Hello.", toPhone: stranger });
+      const d = await waitingDraft(AI, { threadId: t.id, channel: "sms", category: "thread_reply", body: "Hello.", toPhone: stranger });
       await approveOnly(d.message.id);
       return d.message.id;
     };

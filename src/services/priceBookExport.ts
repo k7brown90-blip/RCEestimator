@@ -29,6 +29,7 @@ const ITEM_COLUMNS = [
   { header: "Unit", key: "unitLabel", width: 12 },
   { header: "Row type", key: "rowType", width: 18 },
   { header: "Company cost", key: "companyCost", width: 14, money: true },
+  { header: "Cost + tax", key: "companyCostWithTax", width: 12, money: true },
   { header: "Tier", key: "markupTier", width: 7 },
   { header: "Material w/ markup", key: "companyPrice", width: 17, money: true },
   { header: "Hrs normal", key: "laborNormal", width: 11 },
@@ -61,7 +62,7 @@ function addItemSheet(
 
 /** Build the snapshot workbook. Returns xlsx bytes ready to send. */
 export async function exportPriceBookXlsx(prisma: PrismaClient): Promise<Buffer> {
-  const [active, retired, categories, { tiers, rate }] = await Promise.all([
+  const [active, retired, categories, { tiers, rate, taxRate }] = await Promise.all([
     prisma.priceBookAtomic.findMany({ where: { retiredAt: null } }),
     prisma.priceBookAtomic.findMany({ where: { retiredAt: { not: null } }, orderBy: { retiredAt: "desc" } }),
     listCategories(prisma),
@@ -96,13 +97,14 @@ export async function exportPriceBookXlsx(prisma: PrismaClient): Promise<Buffer>
   rHead.fill = HEADER_FILL;
   rHead.font = HEADER_FONT as ExcelJS.Font;
   rates.addRow({ k: "Labor rate ($/hour)", v: rate });
+  rates.addRow({ k: "Sales tax rate (in every sell)", v: taxRate });
   rates.addRow({ k: "Markup tier 1 (cost under $1.00)", v: tiers.tier1 });
   rates.addRow({ k: "Markup tier 2 ($1.00–$9.99)", v: tiers.tier2 });
   rates.addRow({ k: "Markup tier 3 ($10.00–$49.99)", v: tiers.tier3 });
   rates.addRow({ k: "Markup tier 4 ($50.00–$199.99)", v: tiers.tier4 });
   rates.addRow({ k: "Markup tier 5 ($200.00 and up)", v: tiers.tier5 });
   rates.addRow({ k: "Sell formula", v: null });
-  rates.addRow({ k: "  material = cost × tier multiplier", v: null });
+  rates.addRow({ k: "  material = cost × (1 + sales tax) × tier multiplier", v: null });
   rates.addRow({ k: "  sell = hours × rate + material", v: null });
 
   const bytes = await wb.xlsx.writeBuffer();

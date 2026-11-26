@@ -32,7 +32,7 @@ export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 export const PENDING_STALE_MS = 2 * 60 * 1000;
 /**
  * How long the operation's transaction may run. The default is 5 seconds, and a draft's effects (the row, the
- * auto-send decision, which can be a real send once a category is switched on, and the fan-out) can take longer
+ * send itself, which is a real email or text since agents act without check-ins (Kyle 2026-11-24), and the fan-out) can take longer
  * on a slow provider: a timeout would roll the audit row back and answer 500 although the message went.
  */
 export const IDEMPOTENT_TX_TIMEOUT_MS = 30_000;

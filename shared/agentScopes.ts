@@ -13,7 +13,8 @@
 export const AGENT_SCOPES = {
   // Hub (spec section 3.2)
   "hub:read": "Read customer conversations (and job crew chats) — not the Team or group chats",
-  "hub:draft": "Draft customer messages for approval",
+  // Kyle 2026-11-24 (no check-ins): the stored name stays hub:draft; what it does is send. The card's short label stays Kyle's "Draft customer".
+  "hub:draft": "Email and text customers — a message goes out as soon as the agent posts it (no approval step)",
   "inventory:usage": "Draft stock movements, counts and reorder lists",
   "campaign:draft": "Draft email campaigns (never send)",
   "media:marketing:read": "Read cleared marketing photos",
@@ -33,8 +34,10 @@ export const AGENT_SCOPES = {
   "team:reply": "Post in the Team, group and job crew chats",
   "finance:read": "Read jobs, invoices and payments — ids and customer first names only",
   "dev:ticket": "File and read dev tickets",
-  "inventory:read": "Read price book, stock, purchase orders and receipts",
-  "pricebook:propose": "Propose price book additions for approval",
+  "inventory:read": "Read stock, purchase orders and receipts",
+  // Kyle 2026-11-24: the price book has its own two scopes. pricebook:propose (never read by any code) was retired into pricebook:write.
+  "pricebook:read": "Read the price book",
+  "pricebook:write": "Add to the price book and propose changes",
   "outreach:read": "Read finished jobs and consent state for outreach",
   "reviews:confirm": "Mark a review as confirmed",
   "reports:read": "Read de-identified reports",
@@ -74,24 +77,25 @@ export function isAgentRole(value: string): value is AgentRole {
 export const DEFAULT_SCOPES_BY_ROLE: Record<AgentRole, readonly AgentScope[]> = {
   admin: [
     "crm:read", "hub:read", "inventory:read", "leads:write", "notes:write", "estimate:draft",
-    "schedule:propose", "estimate:propose_accept", "hub:draft", "team:read", "team:reply", "dev:ticket",
+    "schedule:propose", "estimate:propose_accept", "hub:draft", "team:read", "team:reply", "dev:ticket", "pricebook:read",
   ],
-  inventory: ["inventory:read", "inventory:usage", "pricebook:propose", "team:read", "team:reply"],
-  outreach: ["outreach:read", "hub:read", "hub:draft", "leads:draft", "reviews:confirm", "team:read", "team:reply"],
-  research: ["team:read", "team:reply", "reports:read"],
-  cfo: ["team:read", "team:reply", "finance:read"],
+  // Kyle 2026-11-24: the Inventory key reads AND writes the price book; every other role (but Other) reads it.
+  inventory: ["inventory:read", "inventory:usage", "pricebook:read", "pricebook:write", "team:read", "team:reply"],
+  outreach: ["outreach:read", "hub:read", "hub:draft", "leads:draft", "reviews:confirm", "team:read", "team:reply", "pricebook:read"],
+  research: ["team:read", "team:reply", "reports:read", "pricebook:read"],
+  cfo: ["team:read", "team:reply", "finance:read", "pricebook:read"],
   // Team answer 15a: the Facebook agent reads originals and uploads a separate edited copy.
   facebook: [
-    "marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload", "team:read", "team:reply",
+    "marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload", "team:read", "team:reply", "pricebook:read",
   ],
   // W2: Scout reads and posts in the Team chats like the rest; its training scopes stay (it is no longer limited to training threads).
   scout: [
     "marketing:read", "media:marketing:read", "leads:dupcheck", "leads:draft", "training:read",
-    "training:write", "team:read", "team:reply",
+    "training:write", "team:read", "team:reply", "pricebook:read",
   ],
-  nec_coach: ["team:read", "team:reply"],
+  nec_coach: ["team:read", "team:reply", "pricebook:read"],
   // W2: Claude Code keeps its dev scopes and also joins the Team chats (it is no longer limited to dev threads).
-  claude_code: ["dev:read", "dev:write", "team:read", "team:reply"],
+  claude_code: ["dev:read", "dev:write", "team:read", "team:reply", "pricebook:read"],
   other: [],
 };
 
@@ -217,11 +221,11 @@ export const AGENT_SCOPE_GROUP: Record<AgentScope, AgentScopeGroup> = {
   // W2: the four Messages scopes are their own group (Read team, Post team, Read customer, Draft customer).
   "team:read": "messages", "team:reply": "messages", "hub:read": "messages", "hub:draft": "messages",
   "finance:read": "read",
-  "crm:read": "read", "inventory:read": "read", "outreach:read": "read", "reports:read": "read",
+  "crm:read": "read", "inventory:read": "read", "pricebook:read": "read", "outreach:read": "read", "reports:read": "read",
   "marketing:read": "read", "training:read": "read", "media:marketing:read": "read", "media:original:read": "read",
   "dev:read": "read", "leads:dupcheck": "read",
   "campaign:draft": "draft", "leads:draft": "draft", "estimate:draft": "draft",
-  "schedule:propose": "draft", "estimate:propose_accept": "draft", "pricebook:propose": "draft", "inventory:usage": "draft",
-  "leads:write": "write", "notes:write": "write", "dev:ticket": "write", "dev:write": "write",
+  "schedule:propose": "draft", "estimate:propose_accept": "draft", "inventory:usage": "draft",
+  "leads:write": "write", "notes:write": "write", "pricebook:write": "write", "dev:ticket": "write", "dev:write": "write",
   "reviews:confirm": "write", "training:write": "write", "media:edit:upload": "write",
 };

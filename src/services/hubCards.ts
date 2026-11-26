@@ -13,13 +13,14 @@
  */
 import type { HubMessage, HubThread, EmailDelivery, PrismaClient, Prisma } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
-import { findVisibleThread, visibleThreadWhere, HubError, type HubReader } from "./hub";
+import { findVisibleThread, heldKindPowers, readerHoldsPower, visibleThreadWhere, HubError, type HubReader } from "./hub";
+import { PRICE_CHANGE_KIND } from "./priceBookProposalPayload";
 import { prepareSms, recipientFor, releaseStaleSends, type Recipient, type SmsPrepared } from "./hubSend";
 import { entryFor } from "./hubActions/registry";
 import { emailOf } from "./hubTimeline";
 import { groupDraftBlock } from "./hubGroups";
 import { REHEARSAL_RESULT_LINE } from "./rehearsal";
-import { CARD_KINDS, isCardKind } from "../../shared/hub/cards";
+import { CARD_KINDS, KIND_APPROVER_POWERS, isCardKind } from "../../shared/hub/cards";
 import { SMS_DISABLED_ERROR, sendBlockText } from "../../shared/hub/sendBlocks";
 import { CRM_POWERS } from "../../shared/crmPowers";
 import type { ApprovalCardView, ApprovalsResponse } from "../../shared/hub/views";
@@ -88,6 +89,10 @@ async function recentAbove(db: PrismaClient, m: CardRow) {
 function outcomeText(m: CardRow, decidedBy: string | null, testAccount = false): string | null {
   const status = m.status as HubMessageStatus;
   const who = decidedBy ?? "someone";
+  // A price change that was approved and applied is not "posted": it changed the price book.
+  if (status === "posted" && m.actionKind === PRICE_CHANGE_KIND) return `Price book changed by ${who}`;
+  // ...and one that could not be applied is not "could not be sent": nothing was sent, and the price book was not changed.
+  if (status === "failed" && m.actionKind === PRICE_CHANGE_KIND) return `Price book not changed: ${m.error ?? "unknown reason"}`;
   switch (status) {
     // A message approved on the office's test account settles as sent with no provider id and no delivery row:
     // nothing left the building (TC10), and the card says so rather than "Sent by Kyle".
@@ -106,14 +111,16 @@ function outcomeText(m: CardRow, decidedBy: string | null, testAccount = false):
   }
 }
 
-async function viewOf(db: PrismaClient, m: CardRow, who: Map<string, string>): Promise<ApprovalCardView> {
+async function viewOf(db: PrismaClient, m: CardRow, who: Map<string, string>, reader: HubReader): Promise<ApprovalCardView> {
   const { kind, entry } = entryFor(m);
   const recipient: Recipient | null = await recipientFor(m.thread, db);
   // A text that still has a decision or a retry ahead of it is checked now, with the very function the send runs.
   const sms: SmsPrepared | null = m.channel === "sms" && entry?.run && ["pending_approval", "approved", "failed"].includes(m.status)
     ? await prepareSms(m, m.thread, db)
     : null;
-  const described = entry?.describe({ message: m, thread: m.thread, recipient, sms });
+  const described = entry ? await entry.describe({ message: m, thread: m.thread, recipient, sms, db }) : undefined;
+  // A kind a named power governs (a price change: price_book_edit) is greyed, with that power's sentence, for an approver who lacks it.
+  const powerBlock = entry?.approverPower && !(await readerHoldsPower(reader, entry.approverPower, db)) ? CRM_POWERS[entry.approverPower].reason : null;
   const decidedBy = who.get(m.id) ?? (m.decidedBy?.startsWith("rule:") ? "an auto-send rule" : null);
   const ai = AI_AUTHORS.has(m.authorType);
   // A draft waiting in a group that has since been closed, or whose agent has left it, cannot be approved: say why on the card.
@@ -145,8 +152,10 @@ async function viewOf(db: PrismaClient, m: CardRow, who: Map<string, string>): P
     approve: {
       label: described?.approveLabel ?? "Approve",
       confirm: described?.confirm ?? "Approve this?",
-      blockedReason: groupBlock ?? (described ? described.blockedReason : "This kind of card is not handled by this version."),
-      editBlockedReason: groupBlock ?? (described ? described.editBlockedReason : "This kind of card is not handled by this version."),
+      blockedReason: groupBlock ?? powerBlock ?? (described ? described.blockedReason : "This kind of card is not handled by this version."),
+      editBlockedReason: groupBlock ?? powerBlock ?? (described ? described.editBlockedReason : "This kind of card is not handled by this version."),
+      // Reject is greyed only for the power (a reason is typed afterwards): someone who may not approve a price change may not close it either.
+      rejectBlockedReason: powerBlock,
     },
     editable: described?.editable ?? { subject: false, to: false, cc: false },
     outcome: {
@@ -191,6 +200,17 @@ export async function listApprovalCards(
     // NOT IN drops rows whose actionKind is null, and a plain draft has none: keep those explicitly.
     base.push({ OR: [{ actionKind: null }, { actionKind: { notIn: [...filter.excludeKinds] } }] });
   }
+  // A reader without approve_drafts who holds a kind's own power (price_book_edit) is an approver for that kind alone: the list is cut to those kinds
+  // and the session may decide them (Kyle 2026-11-25, "Yes, same power"). Everyone else is exactly as before.
+  let mayDecide = canApprove;
+  if (!canApprove) {
+    const held = await heldKindPowers(reader, db);
+    const kinds = Object.entries(KIND_APPROVER_POWERS).filter(([, power]) => power !== undefined && held.includes(power)).map(([kind]) => kind);
+    if (kinds.length > 0) {
+      mayDecide = true;
+      base.push({ actionKind: { in: kinds } });
+    }
+  }
   const where = (status: Prisma.HubMessageWhereInput): Prisma.HubMessageWhereInput => ({ AND: [...base, status] });
 
   // Oldest first for the queue (first drafted, first reviewed); a conversation's cards read as a history.
@@ -207,8 +227,8 @@ export async function listApprovalCards(
     ].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const who = await decidedByNames(db, rows.map((r) => r.id));
   const cards: ApprovalCardView[] = [];
-  for (const row of rows) cards.push(await viewOf(db, row, who));
-  return { cards, canApprove, approveReason: canApprove ? null : CRM_POWERS.approve_drafts.reason };
+  for (const row of rows) cards.push(await viewOf(db, row, who, reader));
+  return { cards, canApprove: mayDecide, approveReason: mayDecide ? null : CRM_POWERS.approve_drafts.reason };
 }
 
 /** One card, only if this reader may see its thread. */
@@ -216,5 +236,5 @@ export async function approvalCardFor(reader: HubReader, messageId: string, db: 
   const row = await db.hubMessage.findUnique({ where: { id: messageId }, include: INCLUDE });
   if (!row || row.deletedAt || row.authorType === "system" || !(await findVisibleThread(reader, row.threadId, db))) throw new HubError("Message not found", 404);
   const who = await decidedByNames(db, [row.id]);
-  return viewOf(db, row, who);
+  return viewOf(db, row, who, reader);
 }

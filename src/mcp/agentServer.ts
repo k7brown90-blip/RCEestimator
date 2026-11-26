@@ -32,7 +32,8 @@ import { AGENT_TOOLS } from "../agentApi/tools";
 
 const SERVER_INFO = { name: "rce-agent-door", version: "1.0.0" } as const;
 const INSTRUCTIONS = "Red Cedar Electric's agent door. Call whoami first: it says what this key may do. "
-  + "Errors come back as a tool error whose text is JSON {code, reason, retryable}; the reason names the scope to tick on Settings -> Agent keys.";
+  + "Errors come back as a tool error whose text is JSON {code, reason, retryable}; the reason names the scope to tick on Settings -> Agent keys. "
+  + "The price book tools take PRE-TAX costs and per-unit hours; an agent can add a NEW item, and a change to an existing one is a proposal that a person approves in the CRM.";
 
 /** The JSON schema tools/list shows for a tool's input (the defaults made optional, the $schema line left off). */
 function jsonSchemaOf(input: z.ZodType): Record<string, unknown> {

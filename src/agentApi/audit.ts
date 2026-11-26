@@ -7,7 +7,7 @@
  * What a row holds, and what it never holds:
  *   * action = the tool name (or the REST route's action), endpoint = the route, agent = the key's
  *     role, door = "mcp" | "rest", scopeUsed = the scope that authorised it, recordIds = ids only,
- *     resultCode = "ok" | "replayed" | the error code, responseStatus, durationMs, agentKeyId.
+ *     resultCode = "ok" | "sent" | "not_sent" | "replayed" | the error code, responseStatus, durationMs, agentKeyId.
  *   * clientRequestId = the idempotency key as a sha256 (never the key itself).
  *   * agentKeyName (W2) is the KEY's own name at the time of the call, a snapshot for Settings -> Agent keys -> Activity.
  *   * NEVER a request or response body, a message, a person's name, a token or a key. `payloadJson` is never
@@ -18,7 +18,8 @@
  * Append-only is enforced by the database: the migration's trigger raises on UPDATE and DELETE of
  * AgentAuditLog. Nothing in the app updates or deletes these rows, and nothing may.
  *
- * Daily drafts: a row that made a draft carries entityType "draft" and resultCode "ok". A replay
+ * Daily drafts: a row that made a draft carries entityType "draft" and resultCode "ok", "sent" or "not_sent" (a customer message that went
+ * out, or one a guard refused: it still counts toward the day). A replay
  * ("replayed") made nothing, so it does not count. The cap (500 per key per Chicago day) is read
  * from these rows by countDraftsToday.
  */
@@ -30,6 +31,9 @@ import { CALENDAR_DAY_TIME_ZONE } from "../../shared/calendarDay";
 
 export const AGENT_DRAFT_ENTITY_TYPE = "draft";
 export const AGENT_DAILY_DRAFT_LIMIT = 500;
+
+/** The result codes of a call that made a customer draft or message (hubDoor.ts createMessageCore); every one counts toward the 500 a day. */
+const DRAFT_RESULT_CODES: readonly string[] = ["ok", "sent", "not_sent"];
 
 export type AgentDoor = "mcp" | "rest";
 
@@ -48,7 +52,7 @@ export interface AgentCallRecord {
   scopeUsed: string | null;
   /** Ids only. Never names, text or contact details. */
   recordIds?: readonly string[] | null;
-  /** "ok", "replayed" or an error code. */
+  /** "ok", "sent", "not_sent", "replayed" or an error code. */
   resultCode: string;
   status: number;
   durationMs: number;
@@ -81,7 +85,7 @@ function cleanRecordIds(ids: readonly string[] | null | undefined): string[] | n
 export async function recordAgentCall(
   call: AgentCallRecord, db: PrismaClient | Prisma.TransactionClient = defaultPrisma,
 ): Promise<string> {
-  const countsAsDraft = call.madeDraft === true && call.resultCode === "ok";
+  const countsAsDraft = call.madeDraft === true && DRAFT_RESULT_CODES.includes(call.resultCode);
   const row = await db.agentAuditLog.create({
     data: {
       action: call.tool,
@@ -118,7 +122,7 @@ export async function countDraftsToday(
       agentKeyId,
       createdAt: { gte: chicagoDayStart(now) },
       entityType: AGENT_DRAFT_ENTITY_TYPE,
-      resultCode: "ok",
+      resultCode: { in: [...DRAFT_RESULT_CODES] },
     },
   });
 }

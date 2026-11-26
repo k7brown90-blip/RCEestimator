@@ -43,6 +43,7 @@ function fakePrisma() {
         Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
       findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
     },
+    companySetting: { findUnique: () => Promise.resolve({ key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }) },
   } as never;
 }
 
@@ -58,15 +59,17 @@ describe("exportPriceBookXlsx", () => {
     expect(book.rowCount).toBe(3); // header + 2 items
     expect(book.getRow(2).getCell(1).value).toBe("b-item"); // SECOND ordered first
     expect(book.getRow(3).getCell(1).value).toBe("a-item");
-    expect(book.getRow(2).getCell(13).value).toBe(170); // sell normal survives round-trip
+    // Kyle 2026-11-24 "Tax in sell, all items": a "Cost + tax" column now sits after "Company cost", so every column after it moved right by one.
+    expect(book.getRow(2).getCell(14).value).toBe(170); // sell normal survives round-trip
 
     const retired = wb.getWorksheet("Retired")!;
     expect(retired.rowCount).toBe(2);
     expect(retired.getRow(2).getCell(1).value).toBe("old-item");
-    expect(retired.getRow(2).getCell(18).value).toBe("2026-08-25");
+    expect(retired.getRow(2).getCell(19).value).toBe("2026-08-25");
 
     const rates = wb.getWorksheet("Rate Config")!;
     expect(rates.getRow(2).getCell(2).value).toBe(100); // labor rate — the live Rate Config cell, not a constant
-    expect(rates.getRow(3).getCell(2).value).toBe(1); // tier 1
+    expect(rates.getRow(3).getCell(2).value).toBe(0.0975); // the sales tax rate inside every sell
+    expect(rates.getRow(4).getCell(2).value).toBe(1); // tier 1
   });
 });

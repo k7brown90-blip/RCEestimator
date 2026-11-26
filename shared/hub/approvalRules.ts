@@ -46,12 +46,16 @@ export interface CardLocks {
   approveLabel: string;
 }
 
-export function cardLocks(card: Pick<ApprovalCardView, "status" | "approve">, canApprove: boolean, approveReason: string | null): CardLocks {
+export function cardLocks(card: Pick<ApprovalCardView, "status" | "approve" | "kind">, canApprove: boolean, approveReason: string | null): CardLocks {
   const power = approveReason ?? "";
   return {
     lock: !canApprove ? approveReason : card.approve.blockedReason,
     editLock: !canApprove ? approveReason : card.approve.editBlockedReason,
-    rejectLock: !canApprove ? power : null,
-    approveLabel: card.status === "failed" ? "Try sending again" : card.status === "approved" ? "Send now" : card.approve.label,
+    rejectLock: !canApprove ? power : card.approve.rejectBlockedReason ?? null,
+    // A price change that failed to apply was never "sent": its retry says what it does.
+    approveLabel: card.status === "failed" ? (card.kind === "price_change" ? "Try the change again" : "Try sending again") : card.status === "approved" ? "Send now" : card.approve.label,
   };
 }
+
+/** The Approve button's words while the decision is running: a price change is applied, everything else is sent. */
+export const approvingLabel = (card: Pick<ApprovalCardView, "kind">): string => (card.kind === "price_change" ? "Applying…" : "Sending…");

@@ -3,8 +3,8 @@
  * the approvers get ONE reminder after 15 minutes and then at most one an hour, Monday to Friday, inside the
  * hours set here (America/Chicago). A decided draft is never reminded about.
  *
- * Click path from the Dashboard: left nav "Settings" -> scroll to "Message reminders", under "AI auto-send
- * rules" (two clicks). The reminder is a notification on the person's device: "Messages" -> "Turn on
+ * Click path from the Dashboard: left nav "Settings" -> scroll to "Message reminders", under "Agent
+ * webhooks" (two clicks). The reminder is a notification on the person's device: "Messages" -> "Turn on
  * notifications on this device" turns that on (the card says so).
  *
  *   * Only the hours are set here. Mon-Fri is fixed text, not a field (it is Kyle's reminder rule only: customer

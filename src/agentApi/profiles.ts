@@ -192,6 +192,8 @@ export const hubDraftResultSchema = z.object({
   createdAt: z.string(),
   /** W2: when status is pending_approval, why it is waiting, in plain words; null when it posted. Without this line zod would strip it. */
   pending_reason: z.string().max(400).nullable().optional(),
+  /** Kyle 2026-11-24 (no check-ins): a customer message that did NOT go out (blocked by a guard, failed, or kept as a draft): why, in plain words. Null when sent. */
+  not_sent_reason: z.string().max(400).nullable().optional(),
 });
 export type HubDraftResult = z.infer<typeof hubDraftResultSchema>;
 
@@ -241,4 +243,45 @@ export const reportLeadSourcesSchema = z.object({
   from: z.string().max(12).nullable(), to: z.string().max(12).nullable(), total: z.number().int(),
   by_source: z.array(z.object({ source: z.string().max(60), count: z.number().int() })),
   by_platform: z.array(z.object({ platform: z.string().max(60), count: z.number().int() })),
+});
+
+// ── the price book (Kyle 2026-11-24: pricebook:read / pricebook:write) ────────────────────────────
+
+/**
+ * An item as an agent reads it: the one shape for a search row, one item and a created item. Costs are PRE-TAX (the shelf price); `sell` is what the
+ * customer is charged per difficulty. `hours` are per-unit; a tier that is null is blank (the estimate engine will not price that difficulty).
+ * `cost_with_tax` is cost with the sales tax in it (null when the item has no cost, the book has not been repriced for sales tax yet, or the price was set by hand). No customer data lives in the price book, so these answers withhold nothing.
+ */
+const priceBookTiers = z.object({ normal: z.number().nullable(), difficult: z.number().nullable(), very_difficult: z.number().nullable() });
+export const priceBookItemSchema = z.object({
+  item_id: z.string().max(64),
+  name: z.string().nullable(),
+  category: z.string().nullable(),
+  sub_category: z.string().nullable(),
+  type: z.enum(["labor", "material", "assembly"]),
+  row_type: z.string().nullable(),
+  unit: z.string().nullable(),
+  hours: priceBookTiers,
+  cost: z.number().nullable(),
+  cost_with_tax: z.number().nullable().optional(),
+  sell: priceBookTiers,
+  labour_source: z.string().nullable(),
+  notes: z.string().nullable(),
+  retired: z.boolean(),
+  components: z.array(z.object({ item_id: z.string().max(64), name: z.string().nullable(), quantity: z.number() })).optional(),
+});
+export type PriceBookItemRead = z.infer<typeof priceBookItemSchema>;
+export const priceBookItemListSchema = z.object({
+  items: z.array(priceBookItemSchema), count: z.number().int(), total: z.number().int(), truncated: z.boolean(),
+});
+export const priceBookCategoriesSchema = z.object({
+  categories: z.array(z.object({
+    name: z.string(), count: z.number().int(),
+    sub_categories: z.array(z.object({ name: z.string().nullable(), count: z.number().int() })),
+  })),
+});
+/** What a proposal answers: the card waiting for approval. */
+export const priceBookProposalSchema = z.object({
+  proposal_id: z.string(), item_id: z.string().max(64), status: z.string().max(30), waiting_for: z.string().max(200),
+  changes: z.array(z.object({ field: z.string().max(30), before: z.union([z.string(), z.number()]).nullable(), after: z.union([z.string(), z.number()]).nullable() })),
 });

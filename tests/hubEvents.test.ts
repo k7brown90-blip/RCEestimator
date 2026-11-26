@@ -550,7 +550,8 @@ describe("the payload is a closed shape", () => {
   });
 
   it("has a builder for every event type in the shared list", () => {
-    expect(HUB_EVENT_TYPES.length).toBe(12);
+    // Kyle 2026-11-24: pricebook.item_created and pricebook.change_proposed are the 13th and 14th (tests/agentPriceBook.test.ts pins their payloads).
+    expect(HUB_EVENT_TYPES.length).toBe(14);
   });
 });
 

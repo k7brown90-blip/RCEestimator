@@ -7,10 +7,12 @@
  *   GET  /api/hub/threads                 any scope that opens a kind (HUB_KIND_SCOPES; the gate takes any one of them) - the threads the key
  *                                         may read (filters: kind, status, since; NO search)
  *   GET  /api/hub/threads/:id/messages    the same scopes - one thread and its messages (the path the team's contract names)
- *   POST /api/hub/messages                hub:draft (customer draft) / team:reply (Team, group, job crew chat) / training:write: a customer
- *                                         draft waits for a person (or an owner rule); a Team, group or crew post is published at once when its
- *                                         key's "Team posts publish immediately" box is ticked (services/hubAutoSend.ts), else it waits too.
- *                                         The answer says which (status) and, when it waits, why (pending_reason).
+ *   POST /api/hub/messages                hub:draft (customer message) / team:reply (Team, group, job crew chat) / training:write: a customer
+ *                                         email or text is SENT when it is posted (Kyle 2026-11-24, no check-ins: services/hubDrafts.ts and
+ *                                         hubAgentSend.ts, through every guard); a Training post is published; a Team, group or crew post is
+ *                                         published at once when its key's "Team posts publish immediately" box is ticked, else it waits.
+ *                                         The answer says which (status) and, when a customer message did not go, why (not_sent_reason),
+ *                                         or, when a team post waits, why (pending_reason).
  *
  * W2-B: each of the three is a CORE (listThreadsCore, threadDetailCore, createMessageCore) that takes a DoorCall instead of an Express request. The REST
  * handlers below are thin wrappers; the /mcp tools list_threads, read_thread and post_message (src/agentApi/tools.ts) call the SAME cores, so the
@@ -32,8 +34,8 @@
  *     (team answer 9a) and never a dev thread (step 7): a record link makes a CUSTOMER thread only.
  *   * NO SEARCH. `q` is refused to an agent: a search that matches raw titles and bodies would let a key rebuild a
  *     phone, email, address or withheld name by guessing.
- *   * STATUS. missing = pending_approval; 'draft' = draft; anything else = 403 "Agents can only create
- *     drafts" and no row. createDraftMessage and postMessageResult refuse the same again.
+ *   * STATUS. missing (or the old 'pending_approval', kept so an older agent script still works) = send now; 'draft' = a draft that goes
+ *     nowhere; anything else = 403 and no row. createDraftMessage and postMessageResult refuse the same again.
  *   * CLASS. messageClass and purposeKey are never read from the body: createMessageRow derives them
  *     from `category`, which is validated against shared/hub/messageCategories.ts.
  *   * RECIPIENT. A draft takes no address, phone or cc (400): the CRM fills the recipient in at send.
@@ -54,6 +56,7 @@ import { withKeyedMutex } from "../lib/keyedMutex";
 import { HubError, agentPostCategory, ensureThreadFor, memberGroupIds, postMessageResult, type HubReader } from "../services/hub";
 import { LAST_LINE_MAX, listThreads, threadDetail } from "../services/hubInbox";
 import { createDraftMessage } from "../services/hubDrafts";
+import { notSentReasonFor } from "../services/hubAgentSend";
 import { campaignFirstName } from "../services/emailCampaigns";
 import { messageCategoryFor } from "../../shared/hub/messageCategories";
 import {
@@ -131,8 +134,8 @@ export interface DoorResult {
   idempotencyKey?: string;
 }
 
-/** The REST door's DoorCall: the request the gate accepted. */
-function restCall(req: Request, res: Response): DoorCall {
+/** The REST door's DoorCall: the request the gate accepted (the hub routes here and the price-book routes, src/routes/agentPriceBook.ts). */
+export function restCall(req: Request, res: Response): DoorCall {
   const state = req as AgentRequest;
   return {
     principal: state.agentPrincipal!,
@@ -626,13 +629,14 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
   const principal = call.principal;
 
   const sentRecipient = RECIPIENT_KEYS.filter((k) => raw[k] !== undefined);
-  if (sentRecipient.length > 0) throw badRequest("A draft takes no recipient or cc: the CRM fills the address in when it is approved.");
+  if (sentRecipient.length > 0) throw badRequest("A message takes no recipient or cc: the CRM fills in the customer's address on file when it sends.");
   const body = draftBodySchema.parse(raw);
 
-  // The ONE status rule. Missing is waiting-for-approval; draft is allowed; nothing else is, and nothing is written.
-  const wanted = body.status === undefined ? "pending_approval" : body.status;
-  if (wanted !== "pending_approval" && wanted !== "draft") throw forbidden("Agents can only create drafts.");
-  const status: "draft" | "pending_approval" = wanted;
+  // The ONE status rule. Missing sends (the old "pending_approval" is read the same way: there is no approval step left for an agent's own
+  // request); draft keeps it as a draft; nothing else is allowed, and nothing is written.
+  const wanted = body.status === undefined || body.status === "pending_approval" ? "send" : body.status;
+  if (wanted !== "send" && wanted !== "draft") throw forbidden("An agent can only send a message or leave a draft (status: draft).");
+  const status: "draft" | "send" = wanted;
 
   // Tags are checked against the small list an agent may use; the opt-out hint is for customer drafts only.
   const badTag = body.tags.find((t) => !(AGENT_DRAFT_TAGS as readonly string[]).includes(t));
@@ -650,7 +654,7 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
   if (thread.kind === "job" && (body.channel === "email" || body.channel === "sms")) {
     throw badRequest("A customer message goes in the customer's conversation (use customerId or jobId), not the crew chat.");
   }
-  // The send type of a post in a Team, group, crew or Training conversation is decided by where it goes (the auto-send rule reads it).
+  // The send type of a post in a Team, group, crew or Training conversation is decided by where it goes (the key's Team-post box reads it).
   let postCategory: string | null = null;
 
   let channel: "email" | "sms" | "in_app";
@@ -684,6 +688,7 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
       let message;
       let replayedInside = false;
       let heldBecause: string | null | undefined;
+      let notSent: string | null = null;
       // A retry that already made its post is answered from what it made (below); only a NEW post is counted against the loop limit.
       // W2: the check and the insert are not one step, so concurrent posts (every agent answering one person's post at once) would all read the same count.
       // Two layers make them one step. In this process, the posts to one thread wait their turn BEFORE any transaction opens (withKeyedMutex, below),
@@ -702,10 +707,10 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
         });
         message = made.message;
         replayedInside = made.replayed === true;
-        heldBecause = made.autoSendNote;
+        notSent = made.notSentReason;
       } else {
         const made = await postMessageResult(reader, {
-          threadId: thread.id, body: body.body, subject: body.subject ?? null, tags: body.tags, status, category: postCategory,
+          threadId: thread.id, body: body.body, subject: body.subject ?? null, tags: body.tags, status: status === "draft" ? "draft" : undefined, category: postCategory,
           visitId: target.visitId, issuedEstimateId: target.issuedEstimateId, clientMessageId,
         });
         message = made.message;
@@ -715,15 +720,21 @@ export async function createMessageCore(call: DoorCall, reader: HubReader, raw: 
       const raw = {
         messageId: message.id, threadId: message.threadId, status: message.status, channel: message.channel,
         category: message.category, createdAt: toChicagoIso(message.createdAt),
-        // W2: why a post is still waiting, in plain words (the agent is told "posted", or "pending" and the reason).
+        // W2: why a team post is still waiting, in plain words (the agent is told "posted", or "pending" and the reason).
         pending_reason: pendingReasonFor(message.status, heldBecause),
+        // Kyle 2026-11-24: a customer message is SENT when posted (status "sent"); when a guard refused it or the send failed, the status says
+        // so (blocked, failed) and this says why, so the agent is never left to guess that nothing went out.
+        not_sent_reason: toCustomer && message.status !== "sent" ? notSent ?? notSentReasonFor(message) : null,
       };
       const answer = await agentRespond(principal, DRAFT_OUT, raw);
       // The audit row commits WITH the idempotency record. A retry that found the draft already made is not a new draft.
       await recordAgentCall(call.auditRecord({
         // Only a draft to a customer counts toward the 500 a day; a Team, group or crew post is a post (W2).
         status: 201, body: answer.data, recordIds: [message.id, message.threadId], madeDraft: toCustomer && !replayedInside,
-        resultCode: replayedInside ? "replayed" : "ok", idempotencyKey,
+        // Kyle 2026-11-24: the agent audit says what became of a customer message, so Settings -> Agent keys -> Activity tells a send from a refusal:
+        // "sent" went out, "not_sent" was refused by a guard or failed (the reason is in the Message audit log), "ok" is a draft kept as asked or a post.
+        resultCode: replayedInside ? "replayed" : toCustomer ? (message.status === "sent" ? "sent" : message.status === "draft" ? "ok" : "not_sent") : "ok",
+        idempotencyKey,
       }), tx);
       return answer.data;
     },

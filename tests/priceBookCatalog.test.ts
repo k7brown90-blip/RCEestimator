@@ -1,8 +1,9 @@
 /**
  * The in-app editor's pricing must be the workbook's pricing — these tests pin
  * computePricing to the formulas the import parity-asserted:
- *   companyPrice = round(companyCost × tier multiplier, 2)
+ *   companyPrice = round(companyCost × (1 + sales tax) × tier multiplier, 2)
  *   sell_d       = round(laborHours_d × billed rate + companyPrice, 2)
+ * Kyle, 2026-11-24, "Tax in sell, all items": the sales tax is INSIDE the marked-up material; the tier is read off the PRE-TAX cost.
  * The rate is a parameter (Rate Config billedLaborRate — $100/hr from 2026-09-01), so the
  * tests pass it explicitly; the formula, not the figure, is what is pinned.
  * with LABOR ONLY carrying no material and MATERIAL ONLY carrying no labour line.
@@ -17,6 +18,8 @@ import { laborHoursFor } from "../src/services/atomicEstimateEngine";
 // the formula, not the figures, is under test here.
 const TIERS: MarkupTiers = { tier1: 3, tier2: 2.5, tier3: 2, tier4: 1.75, tier5: 1.5 };
 const RATE = 100;
+// Kyle, 2026-11-24, "Tax in sell, all items": Settings -> Purchasing 9.75% is inside every sell. companyCost stays pre-tax.
+const TAX = 0.0975;
 
 describe("computePricing — workbook parity", () => {
   it("material + labor: markup on cost, then hours × rate + material", () => {
@@ -24,23 +27,25 @@ describe("computePricing — workbook parity", () => {
       { rowType: "MATERIAL + LABOR", companyCost: 20, laborNormal: 1, laborDifficult: 1.5, laborVeryDifficult: 2 },
       TIERS,
       RATE,
+      TAX,
     );
-    // $20 cost → tier 3 ($10.00–$49.99) → ×2 = $40 material
+    // $20.00 pre-tax → tier 3 ($10.00–$49.99) → cost with 9.75% tax $21.95 → ×2 = $43.90 material (was $40.00 before tax went in the sell)
     expect(p.markupTier).toBe("T3");
-    expect(p.companyPrice).toBe(40);
-    expect(p.sellNormal).toBe(140); // 1.0 × 100 + 40
-    expect(p.sellDifficult).toBe(190); // 1.5 × 100 + 40
-    expect(p.sellVeryDifficult).toBe(240); // 2.0 × 100 + 40
+    expect(p.companyCostWithTax).toBe(21.95);
+    expect(p.companyPrice).toBe(43.9);
+    expect(p.sellNormal).toBe(143.9); // 1.0 × 100 + 43.90
+    expect(p.sellDifficult).toBe(193.9); // 1.5 × 100 + 43.90
+    expect(p.sellVeryDifficult).toBe(243.9); // 2.0 × 100 + 43.90
   });
 
   it("the rate is the only thing a rate change moves — material stays, sells follow", () => {
     const row = { rowType: "MATERIAL + LABOR", companyCost: 20, laborNormal: 1, laborDifficult: 1.5, laborVeryDifficult: 2 };
-    const at150 = computePricing(row, TIERS, 150);
-    const at100 = computePricing(row, TIERS, 100);
+    const at150 = computePricing(row, TIERS, 150, TAX);
+    const at100 = computePricing(row, TIERS, 100, TAX);
     expect(at150.companyPrice).toBe(at100.companyPrice);
     expect(at150.markupTier).toBe(at100.markupTier);
-    expect([at150.sellNormal, at150.sellDifficult, at150.sellVeryDifficult]).toEqual([190, 265, 340]); // the book before 2026-09-01
-    expect([at100.sellNormal, at100.sellDifficult, at100.sellVeryDifficult]).toEqual([140, 190, 240]);
+    expect([at150.sellNormal, at150.sellDifficult, at150.sellVeryDifficult]).toEqual([193.9, 268.9, 343.9]); // $150/hr (the book before 2026-09-01), tax inside the $43.90 material
+    expect([at100.sellNormal, at100.sellDifficult, at100.sellVeryDifficult]).toEqual([143.9, 193.9, 243.9]);
     // sellsAtRate rebuilds the sell columns from a stored row without re-marking its material.
     expect(sellsAtRate({ rowType: "MATERIAL + LABOR", companyPrice: 40, laborNormal: 1, laborDifficult: 1.5, laborVeryDifficult: 2 }, 100))
       .toEqual({ sellNormal: 140, sellDifficult: 190, sellVeryDifficult: 240 });
@@ -56,8 +61,10 @@ describe("computePricing — workbook parity", () => {
       { rowType: "LABOR ONLY", companyCost: 999, laborNormal: 2, laborDifficult: 3, laborVeryDifficult: 4 },
       TIERS,
       RATE,
+      TAX,
     );
     expect(p.companyPrice).toBeNull();
+    expect(p.companyCostWithTax).toBeNull(); // nothing to put tax on
     expect(p.sellNormal).toBe(200);
     expect(p.sellDifficult).toBe(300);
     expect(p.sellVeryDifficult).toBe(400);
@@ -68,13 +75,15 @@ describe("computePricing — workbook parity", () => {
       { rowType: "MATERIAL ONLY", companyCost: 100, laborNormal: null, laborDifficult: null, laborVeryDifficult: null },
       TIERS,
       RATE,
+      TAX,
     );
-    // $100 → tier 4 ($50.00–$199.99) → ×1.75
+    // $100 pre-tax → tier 4 ($50.00–$199.99) → $109.75 with tax → ×1.75 = $192.0625 → $192.06 (was $175.00 before tax went in the sell)
     expect(p.markupTier).toBe("T4");
-    expect(p.companyPrice).toBe(175);
-    expect(p.sellNormal).toBe(175);
-    expect(p.sellDifficult).toBe(175);
-    expect(p.sellVeryDifficult).toBe(175);
+    expect(p.companyCostWithTax).toBe(109.75);
+    expect(p.companyPrice).toBe(192.06);
+    expect(p.sellNormal).toBe(192.06);
+    expect(p.sellDifficult).toBe(192.06);
+    expect(p.sellVeryDifficult).toBe(192.06);
   });
 
   it("missing hours stay null — a blank is never priced as zero", () => {
@@ -82,10 +91,11 @@ describe("computePricing — workbook parity", () => {
       { rowType: "MATERIAL + LABOR", companyCost: 5, laborNormal: 0.5, laborDifficult: null, laborVeryDifficult: null },
       TIERS,
       RATE,
+      TAX,
     );
-    // $5 → tier 2 ($1.00–$9.99) → ×2.5 = $12.50
-    expect(p.companyPrice).toBe(12.5);
-    expect(p.sellNormal).toBe(62.5); // 0.5 × 100 + 12.50
+    // $5 pre-tax → tier 2 ($1.00–$9.99) → $5.4875 with tax → ×2.5 = $13.71875 → $13.72 (was $12.50)
+    expect(p.companyPrice).toBe(13.72);
+    expect(p.sellNormal).toBe(63.72); // 0.5 × 100 + 13.72
     expect(p.sellDifficult).toBeNull();
     expect(p.sellVeryDifficult).toBeNull();
   });
@@ -106,6 +116,7 @@ describe("computePricing — workbook parity", () => {
         findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
         findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
       },
+      companySetting: { findUnique: () => Promise.resolve({ key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }) },
       $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
     } as never;
 
@@ -146,6 +157,7 @@ describe("computePricing — workbook parity", () => {
         findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
         findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
       },
+      companySetting: { findUnique: () => Promise.resolve({ key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }) },
       $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
     } as never;
 
@@ -160,11 +172,14 @@ describe("computePricing — workbook parity", () => {
       { rowType: "MATERIAL + LABOR", companyCost: 0.99, laborNormal: 0.33, laborDifficult: null, laborVeryDifficult: null },
       TIERS,
       RATE,
+      TAX,
     );
-    // $0.99 → tier 1 (under $1.00) → ×3 = $2.97
+    // $0.99 pre-tax → tier 1 (under $1.00) — the tier is read off the PRE-TAX cost, though $0.99 × 1.0975 = $1.0865 is over a dollar —
+    // → $1.0865 with tax × 3 = $3.2596 → $3.26 (was $2.97); the cost-with-tax column is rounded on its own ($1.09).
     expect(p.markupTier).toBe("T1");
-    expect(p.companyPrice).toBe(2.97);
-    expect(p.sellNormal).toBe(35.97); // 0.33 × 100 = 33.00 + 2.97
+    expect(p.companyCostWithTax).toBe(1.09);
+    expect(p.companyPrice).toBe(3.26);
+    expect(p.sellNormal).toBe(36.26); // 0.33 × 100 = 33.00 + 3.26
   });
 });
 
@@ -196,6 +211,7 @@ describe("updateAtomic — the assembly guard (barcode-materials plan, Unit 1 ho
         findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
         findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
       },
+      companySetting: { findUnique: () => Promise.resolve({ key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }) },
       $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
     } as never;
     return { prisma, getUpdated: () => updated };
@@ -274,6 +290,7 @@ describe("rowType integrity (barcode-materials plan, Unit 1 integrity gaps #1-#3
         findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
         findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
       },
+      companySetting: { findUnique: () => Promise.resolve({ key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }) },
       $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
     } as never;
     return { prisma, getUpdated: () => updated };
@@ -332,6 +349,7 @@ describe("rowType integrity (barcode-materials plan, Unit 1 integrity gaps #1-#3
         findMany: () => Promise.resolve([1, 2, 3, 4, 5].map((n) => ({ key: `markupTier${n}`, numberValue: n }))),
         findUnique: () => Promise.resolve({ key: "billedLaborRate", numberValue: 100 }),
       },
+      companySetting: { findUnique: () => Promise.resolve({ key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }) },
       $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
     } as never;
 

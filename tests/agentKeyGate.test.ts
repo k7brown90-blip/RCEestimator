@@ -113,7 +113,8 @@ describe("minting and storing a key", () => {
     // W2 (Kyle 2026-11-23): Scout and Claude Code are no longer limited to one kind of thread; both read and post in the Team chats.
     expect(scout.row.hubThreadKinds).toEqual([]);
     const claude = await mint({ agentRole: "claude_code" });
-    expect(claude.row.scopes.sort()).toEqual(["dev:read", "dev:write", "team:read", "team:reply"]);
+    // Kyle 2026-11-24: every role but Other also reads the price book (pricebook:read).
+    expect(claude.row.scopes.sort()).toEqual(["dev:read", "dev:write", "pricebook:read", "team:read", "team:reply"]);
     expect(claude.row.hubThreadKinds).toEqual([]);
     // W2: "Team posts publish immediately" is ON for every new key.
     expect(claude.row.teamPostsPublish).toBe(true);
@@ -137,11 +138,12 @@ describe("shared/agentScopes.ts", () => {
     for (const [role, scopes] of Object.entries(DEFAULT_SCOPES_BY_ROLE)) {
       for (const s of scopes) expect(isAgentScope(s), `${role}: ${s}`).toBe(true);
     }
-    expect(AGENT_SCOPE_KEYS.length).toBe(29); // W2 added team:read and finance:read
+    // W2 added team:read and finance:read (29). Kyle 2026-11-24: pricebook:propose (never read by any code) is retired and pricebook:read and pricebook:write added: 30.
+    expect(AGENT_SCOPE_KEYS.length).toBe(30);
     expect(new Set(AGENT_SCOPE_KEYS).size).toBe(AGENT_SCOPE_KEYS.length);
     for (const s of ["hub:read", "hub:draft", "inventory:usage", "campaign:draft", "media:marketing:read", "training:write",
       "crm:read", "leads:write", "leads:draft", "leads:dupcheck", "schedule:propose", "estimate:draft", "estimate:propose_accept",
-      "notes:write", "team:reply", "dev:ticket", "inventory:read", "pricebook:propose", "outreach:read", "reviews:confirm",
+      "notes:write", "team:reply", "dev:ticket", "inventory:read", "pricebook:read", "pricebook:write", "outreach:read", "reviews:confirm",
       "reports:read", "marketing:read", "training:read", "media:original:read", "media:edit:upload", "dev:read", "dev:write",
       "team:read", "finance:read"]) {
       expect(isAgentScope(s), s).toBe(true);
@@ -151,7 +153,7 @@ describe("shared/agentScopes.ts", () => {
   // W2 (Kyle 2026-11-23): every role's HUB part follows his defaults; each role keeps the non-hub scopes it had.
   it("gives Facebook the original-photo scopes, and Scout the Team scopes with its training scopes and no customer scopes", () => {
     expect(DEFAULT_SCOPES_BY_ROLE.facebook).toEqual(
-      ["marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload", "team:read", "team:reply"]);
+      ["marketing:read", "media:marketing:read", "media:original:read", "campaign:draft", "media:edit:upload", "team:read", "team:reply", "pricebook:read"]);
     expect(DEFAULT_SCOPES_BY_ROLE.scout).toEqual(expect.arrayContaining(["training:read", "training:write", "team:read", "team:reply"]));
     expect(DEFAULT_SCOPES_BY_ROLE.scout).not.toContain("hub:read");
     expect(DEFAULT_SCOPES_BY_ROLE.scout).not.toContain("hub:draft");
@@ -171,9 +173,11 @@ describe("shared/agentScopes.ts", () => {
     // Research and CFO carry their own read-only data scopes; NEC Coach carries nothing else.
     expect(DEFAULT_SCOPES_BY_ROLE.research).toContain("reports:read");
     expect(DEFAULT_SCOPES_BY_ROLE.cfo).toContain("finance:read");
-    expect(DEFAULT_SCOPES_BY_ROLE.nec_coach).toEqual(team);
+    // Kyle 2026-11-24: NEC Coach reads the price book too (pricebook:read); nothing else was added to it.
+    expect(DEFAULT_SCOPES_BY_ROLE.nec_coach).toEqual([...team, "pricebook:read"]);
     // Inventory keeps its stock scopes; Admin keeps its CRM ones.
-    expect(DEFAULT_SCOPES_BY_ROLE.inventory).toEqual(expect.arrayContaining(["inventory:read", "inventory:usage", "pricebook:propose"]));
+    // Kyle 2026-11-24: Inventory reads AND writes the price book (pricebook:read + pricebook:write); pricebook:propose is retired.
+    expect(DEFAULT_SCOPES_BY_ROLE.inventory).toEqual(expect.arrayContaining(["inventory:read", "inventory:usage", "pricebook:read", "pricebook:write"]));
     expect(DEFAULT_SCOPES_BY_ROLE.admin).toEqual(expect.arrayContaining(["crm:read", "leads:write", "dev:ticket"]));
     // No role is limited to one kind of thread any more.
     for (const kinds of Object.values(DEFAULT_HUB_THREAD_KINDS_BY_ROLE)) expect(kinds).toEqual([]);
@@ -181,7 +185,7 @@ describe("shared/agentScopes.ts", () => {
 });
 
 describe("AGENT_KEY_ROUTES", () => {
-  it("holds exactly the three REST /api/hub/* routes (K-U7) plus /mcp (W2-B) and never an approve, edit-approve, reject, send or audit route", () => {
+  it("holds exactly the three REST /api/hub/* routes (K-U7), /mcp (W2-B) and the five price-book routes (Kyle 2026-11-24), and never an approve, edit-approve, reject, send, audit, delete, retire or edit route", () => {
     // W2: each route takes ANY scope that opens some kind of thread (the lists are derived from HUB_KIND_SCOPES, never typed twice).
     // W2-B: the fourth entry is the agents' stateless /mcp door (scope "any": each tool checks its own scopes per call), agentOnly.
     expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path} ${[r.scope].flat().join(",")}`)).toEqual([
@@ -189,6 +193,12 @@ describe("AGENT_KEY_ROUTES", () => {
       "GET /hub/threads/:id/messages hub:read,team:read,team:reply,dev:read,training:read,training:write",
       "POST /hub/messages hub:draft,team:reply,training:write",
       "GET|POST|DELETE /mcp any",
+      // Kyle 2026-11-24: the price book door. Reads need pricebook:read, the two writes pricebook:write. No delete, retire or edit entry exists.
+      "GET /agent/price-book/categories pricebook:read",
+      "GET /agent/price-book/items pricebook:read",
+      "GET /agent/price-book/items/:id pricebook:read",
+      "POST /agent/price-book/items pricebook:write",
+      "POST /agent/price-book/items/:id/proposals pricebook:write",
     ]);
     expect(AGENT_KEY_ROUTES.find((r) => r.path === "/mcp")?.agentOnly).toBe(true);
     expect([hubRouteScopes("read")]).toEqual([[...new Set(HUB_THREAD_KIND_KEYS.flatMap((k) => HUB_KIND_SCOPES[k].read))]]);

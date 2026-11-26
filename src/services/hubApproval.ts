@@ -20,7 +20,8 @@
 import type { HubMessage, HubThread, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { prisma as defaultPrisma } from "../lib/prisma";
-import { HubError, createMessageRow, findVisibleThread, hubAudit, type HubReader } from "./hub";
+import { HubError, createMessageRow, findVisibleThread, hubAudit, readerHoldsPower, type HubReader } from "./hub";
+import { CRM_POWERS, type CrmPower } from "../../shared/crmPowers";
 import { emitHubEventSafe } from "./hubEvents";
 import { entryFor } from "./hubActions/registry";
 import { SINGLE_ADDRESS, ccSchema, cleanCc } from "./emailCc";
@@ -57,6 +58,18 @@ export const decisionView = (r: DecisionResult) => ({ card: r.card, send: r.send
 const NOT_YET = "This kind of card is handled in a later step, so it cannot be approved here yet.";
 
 const asActor = (reader: HubReader) => ({ key: reader.key, display: reader.display });
+
+/**
+ * Who may decide this card. A kind that a named power governs (a price change: price_book_edit) is decided by whoever holds THAT power, in place of
+ * approve_drafts (Kyle 2026-11-25, "Yes, same power": Michael holds price_book_edit and approves proposals); every other kind is decided by
+ * approve_drafts. ONE place, for Approve, Edit-and-approve and Reject, in the CRM and in the field app (both call these services). A refusal names
+ * the power in its own sentence (403), and the card is greyed with the same sentence beforehand (services/hubCards.ts).
+ */
+async function requireApprover(reader: HubReader, approverPower: CrmPower | undefined, db: PrismaClient): Promise<void> {
+  const power: CrmPower = approverPower ?? "approve_drafts";
+  if (await readerHoldsPower(reader, power, db)) return;
+  throw new HubError(CRM_POWERS[power].reason, 403);
+}
 
 /** A held message: approved, but waiting because texting is switched off. */
 const isHeld = (m: Pick<HubMessage, "status" | "error">): boolean => m.status === "approved" && m.error === SMS_DISABLED_ERROR;
@@ -101,6 +114,7 @@ export async function approveMessage(reader: HubReader, messageId: string, db: P
   const { message, thread } = await loadDecidable(reader, messageId, db);
   const { kind, entry } = entryFor(message);
   if (!entry?.run) throw new HubError(NOT_YET, 409);
+  await requireApprover(reader, entry.approverPower, db);
   const actor = asActor(reader);
 
   if (message.status === "pending_approval") {
@@ -195,6 +209,8 @@ export async function editApproveMessage(reader: HubReader, messageId: string, e
   const { message: original, thread } = await loadDecidable(reader, messageId, db);
   const { kind, entry } = entryFor(original);
   if (!entry?.run) throw new HubError(NOT_YET, 409);
+  if (entry.noEdit) throw new HubError(entry.noEdit, 409);
+  await requireApprover(reader, entry.approverPower, db);
   if (original.status !== "pending_approval" && original.status !== "failed") {
     throw new HubError(`This message is ${original.status.replace(/_/g, " ")}, so it cannot be edited and sent.`, 409);
   }
@@ -283,7 +299,9 @@ export async function rejectMessage(reader: HubReader, messageId: string, reason
   if (why.length < 3) throw new HubError("Say why you are rejecting it (at least 3 characters).", 400);
   if (why.length > 500) throw new HubError("Keep the reason to 500 characters.", 400);
   const { message } = await loadDecidable(reader, messageId, db);
-  const { kind } = entryFor(message);
+  const { kind, entry } = entryFor(message);
+  // The same per-kind approver as Approve: someone who may not approve a price change may not close it either.
+  await requireApprover(reader, entry?.approverPower, db);
   const rejectable = message.status === "pending_approval" || message.status === "failed" || isHeld(message);
   if (!rejectable) throw new HubError(`This message is ${message.status.replace(/_/g, " ")}, so it cannot be rejected.`, 409);
 
@@ -294,6 +312,8 @@ export async function rejectMessage(reader: HubReader, messageId: string, reason
       data: { status: "rejected", rejectedReason: why, decidedBy: reader.key, decidedAt, error: null, heldReason: null, claimedAt: null },
     });
     if (claim.count === 0) return false;
+    // A kind with its own record of a refusal writes it WITH the claim (a price change: the item's history says it was turned down).
+    await entry?.onReject?.(tx, message, reader.display, why);
     await hubAudit(tx, {
       actorKey: reader.key, actorDisplay: reader.display, action: "message_rejected", entityType: "message", entityId: messageId,
       threadId: message.threadId, messageId, beforeText: message.status, afterText: why, details: { kind, channel: message.channel },

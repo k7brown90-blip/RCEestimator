@@ -4,8 +4,10 @@
  * draft slot, the agent-loop limit and the Team publish rule are shared and cannot drift) or reads through the ONE answer layer (respond.ts
  * agentRespond, with a named de-identified profile from profiles.ts).
  *
- * Write tools: post_message only. Research (reports:read) and CFO (finance:read) have READ tools and nothing else; "financial changes stay
- * proposals" means the CFO proposes by posting in a thread.
+ * Write tools: post_message, and (Kyle 2026-11-24) create_price_book_item and propose_price_book_change, which add a NEW price-book item and
+ * propose a change to an existing one (a card a person approves). There is NO delete, retire or archive tool, and no tool that edits an existing
+ * item directly. Research (reports:read) and CFO (finance:read) have READ tools and nothing else; "financial changes stay proposals" means the CFO
+ * proposes by posting in a thread.
  */
 import { z } from "zod";
 import {
@@ -14,6 +16,10 @@ import {
 import { toChicagoIso } from "../../shared/calendarDay";
 import { AGENT_DAILY_DRAFT_LIMIT, countDraftsToday } from "./audit";
 import { createMessageCore, listThreadsCore, postMessageInputSchema, threadDetailCore } from "./hubDoor";
+import {
+  PRICEBOOK_READ_SCOPES, PRICEBOOK_WRITE_SCOPES, createItemCore, createItemInputSchema, getItemCore, listCategoriesCore, proposeChangeCore,
+  proposeChangeInputSchema, searchInputSchema, searchItemsCore, MAX_HOURS_PER_UNIT,
+} from "./priceBookDoor";
 import { scrub, agentRespond, type AgentToolOutput } from "./respond";
 import type { AgentRequest } from "./gate";
 import {
@@ -99,7 +105,7 @@ const readThread = defineTool({
 const postMessage = defineTool({
   name: "post_message",
   description: "Post in a thread (the same as POST /api/hub/messages). In a Team, group or crew chat it publishes at once when this key's Team posts publish immediately box is on; "
-    + "a draft to a customer waits for a person to approve it (the answer says why it is waiting). Say where it goes with thread_id (or one of customerId, leadId, jobId, estimateId for a customer draft). "
+    + "an email or text to a customer is SENT when you post it (nobody approves it first; it is still refused for a customer who opted out or has not agreed to texts, an address that unsubscribed, or while texting or Agent access is off - the answer's status says sent or blocked and not_sent_reason says why), and a post in a Training thread is published. Say where it goes with thread_id (or one of customerId, leadId, jobId, estimateId for a customer message). "
     + "idempotency_key is required (8 to 128 characters): a retry with the same key and request returns the first result and posts nothing twice.",
   input: postMessageInputSchema,
   scopes: hubRouteScopes("post"),
@@ -107,6 +113,86 @@ const postMessage = defineTool({
   async handler(ctx, _args, raw): Promise<ToolOutcome> {
     // The REST door reads the RAW body (it refuses a recipient or cc before parsing), so the tool hands the core the same raw arguments.
     const out = await createMessageCore(ctx.door, ctx.reader(), raw);
+    return {
+      data: out.body, status: out.status, recordIds: out.recordIds, resultCode: out.replayed ? "replayed" : "ok",
+      auditWritten: out.auditWritten === true, idempotencyKey: out.idempotencyKey,
+    };
+  },
+});
+
+// ── the price book (Kyle 2026-11-24: pricebook:read / pricebook:write; the SAME cores as REST /api/agent/price-book/*) ─────────
+
+const PRICE_NOTE = "material_cost is the PRE-TAX shelf price per unit: never add sales tax yourself, the book adds it (sell = hours x the shop rate + cost x (1 + sales tax) x markup). hours are PER UNIT for the three "
+  + `difficulties (normal, difficult, very_difficult), typed from your own NECA labor-unit library (convert a per-100 or per-1000 value to one unit; at most ${MAX_HOURS_PER_UNIT} per unit). `
+  + "A difficulty NECA gives no time for is left out and stays blank. ";
+
+const listPriceBookCategories = defineTool({
+  name: "list_price_book_categories",
+  description: "List the price book's categories with their item counts and sub-categories (brands), in the order the CRM shows them. Costs everywhere in the price book are PRE-TAX.",
+  input: z.object({}),
+  scopes: PRICEBOOK_READ_SCOPES,
+  write: false,
+  async handler(ctx): Promise<ToolOutcome> {
+    const out = await listCategoriesCore(ctx.door);
+    return { data: out.body, status: out.status, recordIds: out.recordIds };
+  },
+});
+
+const searchPriceBook = defineTool({
+  name: "search_price_book",
+  description: "Search the live price book (retired items are not shown): search matches an item id or its name, category narrows to one category, limit is up to 200 (default 50). "
+    + "Each item has its type (labor, material or assembly), cost (PRE-TAX), cost_with_tax (that cost with the sales tax in it), hours per unit for the three difficulties, sell prices (the tax is already inside them), and where its hours came from.",
+  input: searchInputSchema,
+  scopes: PRICEBOOK_READ_SCOPES,
+  write: false,
+  async handler(ctx, args): Promise<ToolOutcome> {
+    const out = await searchItemsCore(ctx.door, args);
+    return { data: out.body, status: out.status, recordIds: out.recordIds };
+  },
+});
+
+const getPriceBookItem = defineTool({
+  name: "get_price_book_item",
+  description: "One price book item by its id (A016, ASM001...), with its cost (PRE-TAX), cost_with_tax, hours per unit, sell prices (tax inside) and, for an assembly, its parts.",
+  input: z.object({ item_id: z.string().trim().min(1).max(64) }),
+  scopes: PRICEBOOK_READ_SCOPES,
+  write: false,
+  async handler(ctx, args): Promise<ToolOutcome> {
+    const out = await getItemCore(ctx.door, args.item_id);
+    return { data: out.body, status: out.status, recordIds: out.recordIds };
+  },
+});
+
+const createPriceBookItem = defineTool({
+  name: "create_price_book_item",
+  description: "Add a NEW item to the price book (it can never change or delete an existing one). unit is REQUIRED: what ONE unit of the item is, 1 to 24 characters, e.g. \"each\", \"ft\", \"box of 25\"; "
+    + "material_cost and hours are PER THAT UNIT. Send \"ft\" (or lf, foot, feet, per foot, per ft, linear feet) for wire, cable and conduit sold by the foot: the estimate multiplies material_cost and hours by the quantity in that unit, and a per-foot unit groups the item with the continuous-length material the job-level material cap works on (wire, cable and conduit are also recognised by name). "
+    + "A proposal cannot change an item's unit. type labor: hours only. type material: material_cost, plus hours if it takes labor to install. "
+    + "type assembly: components [{item_id, quantity}] of live, priced items; its cost and hours roll up from them. " + PRICE_NOTE
+    + "neca_reference (edition, page, table, row) is kept as the item's labour source. A name that is nearly the same as an item already in that category is refused with that item (409 duplicate_item). "
+    + "idempotency_key is required (8 to 128 characters): a retry with the same key and request returns the first result and adds nothing twice.",
+  input: createItemInputSchema,
+  scopes: PRICEBOOK_WRITE_SCOPES,
+  write: true,
+  async handler(ctx, _args, raw): Promise<ToolOutcome> {
+    const out = await createItemCore(ctx.door, raw);
+    return {
+      data: out.body, status: out.status, recordIds: out.recordIds, resultCode: out.replayed ? "replayed" : "ok",
+      auditWritten: out.auditWritten === true, idempotencyKey: out.idempotencyKey,
+    };
+  },
+});
+
+const proposePriceBookChange = defineTool({
+  name: "propose_price_book_change",
+  description: "Propose a change to the name, cost or hours of an EXISTING price book item. Nothing changes until a person with the price book power approves it in the CRM (Messages, Waiting for approval); "
+    + "the approval card shows the before and after and every assembly the change moves. Send only what changes. " + PRICE_NOTE
+    + "idempotency_key is required (8 to 128 characters).",
+  input: proposeChangeInputSchema,
+  scopes: PRICEBOOK_WRITE_SCOPES,
+  write: true,
+  async handler(ctx, _args, raw): Promise<ToolOutcome> {
+    const out = await proposeChangeCore(ctx.door, null, raw);
     return {
       data: out.body, status: out.status, recordIds: out.recordIds, resultCode: out.replayed ? "replayed" : "ok",
       auditWritten: out.auditWritten === true, idempotencyKey: out.idempotencyKey,
@@ -221,5 +307,6 @@ const listPaymentsTool = defineTool({
 /** The one list. tools/list shows the ones a key's scopes open; tools/call checks again. */
 export const AGENT_TOOLS: readonly AgentTool[] = [
   whoami, listThreads, readThread, postMessage,
+  listPriceBookCategories, searchPriceBook, getPriceBookItem, createPriceBookItem, proposePriceBookChange,
   listJobsTool, getJobTool, listInvoicesTool, getInvoiceTool, listVisitsTool, leadSourceCountsTool, listPaymentsTool,
 ];

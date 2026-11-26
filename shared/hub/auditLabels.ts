@@ -9,7 +9,10 @@ export const HUB_AUDIT_ACTION_LABELS: Record<string, string> = {
   message_edited: "Message edited",
   message_deleted: "Message deleted",
   message_approved: "Approved",
+  // "Auto-approved" is kept for older rows (an auto-send rule) and for a Team post published by its key's own box.
   message_auto_approved: "Auto-approved",
+  // Kyle 2026-11-24 (no check-ins): an AI agent's email or text to a customer, sent on the agent's own request.
+  message_sent_directly: "Sent by an AI agent, no approval step",
   message_edit_approved: "Edited and approved",
   message_rejected: "Rejected",
   message_retry: "Sent again",
@@ -33,6 +36,10 @@ export const HUB_AUDIT_ACTION_LABELS: Record<string, string> = {
   coding_dispatch_failed: "Claude Code could not be started",
   coding_replied: "Claude Code answered",
   coding_cancelled: "Claude Code request cancelled",
+  // Kyle 2026-11-24 (price book for agents)
+  price_item_created: "Price book item added by an agent",
+  price_change_proposed: "Price book change proposed by an agent",
+  price_change_applied: "Price book change approved and applied",
   coding_timed_out: "Claude Code did not answer in an hour",
 };
 

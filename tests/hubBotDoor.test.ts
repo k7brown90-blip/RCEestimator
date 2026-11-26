@@ -39,12 +39,12 @@ vi.mock("googleapis", () => {
 });
 const sent = vi.hoisted(() => ({ emails: [] as unknown[] }));
 const offered = vi.hoisted(() => ({ messageIds: [] as string[] }));
-// The BA8 offer is watched, not replaced: the real rule still runs (every category is off in the test database).
-vi.mock("../src/services/hubAutoSend", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("../src/services/hubAutoSend")>();
+// The direct send is watched, not replaced: the real guards and the real sender still run (Kyle 2026-11-24: no check-ins).
+vi.mock("../src/services/hubAgentSend", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/services/hubAgentSend")>();
   return {
     ...mod,
-    maybeAutoApprove: vi.fn(async (...a: Parameters<typeof mod.maybeAutoApprove>) => { offered.messageIds.push(a[0]); return mod.maybeAutoApprove(...a); }),
+    sendAgentMessageNow: vi.fn(async (...a: Parameters<typeof mod.sendAgentMessageNow>) => { offered.messageIds.push(a[0]); return mod.sendAgentMessageNow(...a); }),
   };
 });
 vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
@@ -111,7 +111,11 @@ const draftBody = (extra: Record<string, unknown> = {}) => ({
 });
 const post = (token: string, body: Record<string, unknown>) => request(app).post("/api/hub/messages").set(bearer(token)).send(body);
 
+// Plan P7 keeps the server-side switch for an AI's customer send (AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND, default-deny): on for this file's direct sends.
+let savedAgentSendGate: string | undefined;
 beforeAll(async () => {
+  savedAgentSendGate = process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND;
+  process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND = "on";
   savedPin = process.env.PIN_HASH;
   savedPepper = process.env.AGENT_KEY_PEPPER;
   savedEnvName = process.env.RAILWAY_ENVIRONMENT_NAME;
@@ -159,6 +163,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (savedAgentSendGate === undefined) delete process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND; else process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND = savedAgentSendGate;
   if (savedPin === undefined) delete process.env.PIN_HASH; else process.env.PIN_HASH = savedPin;
   if (savedPepper === undefined) delete process.env.AGENT_KEY_PEPPER; else process.env.AGENT_KEY_PEPPER = savedPepper;
   if (savedEnvName === undefined) delete process.env.RAILWAY_ENVIRONMENT_NAME; else process.env.RAILWAY_ENVIRONMENT_NAME = savedEnvName;
@@ -254,16 +259,21 @@ describe("GET /api/hub/threads and GET /api/hub/threads/:id", () => {
 });
 
 describe("POST /api/hub/messages", () => {
-  it("leaves a pending_approval draft by default, authored by the KEY and never by the body, and sends nothing", async () => {
+  // Kyle 2026-11-24 ("requiring them to check-in on everything defeats the purpose of the chat"): a missing status no longer leaves a draft waiting
+  // for an Approve. An agent's customer message is SENT when it is posted. This test pinned "pending_approval" and "sends nothing".
+  it("sends by default, authored by the KEY and never by the body, and records that nobody approved it", async () => {
     const token = await mint();
     const before = await countMessages();
     const res = await post(token, draftBody({
       category: "thread_reply", authorType: "office", authorDisplay: "Kyle", authorKey: "owner", messageClass: "internal", purposeKey: "x", status: undefined,
     }));
     expect(res.status).toBe(201);
-    expect(res.body.status).toBe("pending_approval");
+    expect(res.body.status).toBe("sent");
+    expect(res.body.not_sent_reason).toBeNull();
     const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } });
-    expect(row.status).toBe("pending_approval");
+    expect(row.status).toBe("sent");
+    expect(row.decidedBy).toMatch(/^agent:/);
+    expect(await prisma.hubAuditLog.count({ where: { messageId: row.id, action: "message_sent_directly" } })).toBe(1);
     expect(row.authorType).toBe("ai_agent");
     expect(row.authorKey).toMatch(/^agent:/);
     expect(row.authorBotKeyId).toBeTruthy();
@@ -271,22 +281,22 @@ describe("POST /api/hub/messages", () => {
     expect(row.messageClass).toBe("transactional");
     expect(row.purposeKey).toBe("thread_reply");
     expect(await countMessages()).toBe(before + 1);
-    expect(sent.emails).toHaveLength(0);
     expect(res.body.body).toBeUndefined();
     expectNoContact(res.text);
   });
 
-  it("keeps an explicit 'draft' and refuses every other status with 403 and NO row", async () => {
+  it("keeps an explicit 'draft' (it goes nowhere), reads the old 'pending_approval' as send, and refuses every other status with 403 and NO row", async () => {
     const token = await mint();
     const draft = await post(token, draftBody({ status: "draft" }));
     expect(draft.status).toBe(201);
     expect(draft.body.status).toBe("draft");
+    expect(draft.body.not_sent_reason).toMatch(/draft/);
     for (const status of ["approved", "sent", "posted", "received", "approving", "rejected"]) {
       const before = await countMessages();
       const res = await post(token, draftBody({ status }));
       expect(res.status, status).toBe(403);
       expect(res.body.code).toBe("forbidden");
-      expect(res.body.reason).toBe("Agents can only create drafts.");
+      expect(res.body.reason).toBe("An agent can only send a message or leave a draft (status: draft).");
       expect(await countMessages(), status).toBe(before);
     }
     expect(sent.emails).toHaveLength(0);
@@ -421,11 +431,13 @@ describe("POST /api/hub/messages", () => {
 });
 
 describe("Scout writes only into existing training threads", () => {
-  it("posts into a training thread as pending_approval, and is 403 on a customer record link (no thread made)", async () => {
+  // Kyle 2026-11-24 (no check-ins): amendment 16b forced every training post to wait for an Approve; it is published when posted now.
+  it("posts into a training thread and it is published, and is 403 on a customer record link (no thread made)", async () => {
     const scout = await mint({ agentRole: "scout", scopes: SCOUT_SCOPES, hubThreadKinds: ["training"] });
     const ok = await post(scout, { thread_id: trainingThreadId, body: "Good question: check the neutral first.", idempotency_key: key() });
     expect(ok.status).toBe(201);
-    expect(ok.body.status).toBe("pending_approval");
+    expect(ok.body.status).toBe("posted");
+    expect(ok.body.pending_reason).toBeNull();
     const threadsBefore = await prisma.hubThread.count({ where: { customerId } });
     const link = await post(scout, draftBody());
     expect(link.status).toBe(403);
@@ -452,8 +464,11 @@ describe("what an agent key cannot reach, and the kill switch", () => {
     expect((await request(app).post(`/api/hub/threads/${trainingThreadId}/messages`).set(bearer(token)).send({ body: "x" })).status).toBe(401);
     // W2: still exactly three hub routes; each now opens for ANY scope that opens some kind of thread (tests/agentKeyGate.test.ts lists the scopes).
     // W2-B: plus the agents' /mcp door (tests/agentMcpW2.test.ts).
+    // Kyle 2026-11-24: plus the five price-book routes (tests/agentPriceBook.test.ts); none of them is a decision, a delete, a retire or an edit.
     expect(AGENT_KEY_ROUTES.map((r) => `${r.methods.join("|")} ${r.path}`)).toEqual([
       "GET /hub/threads", "GET /hub/threads/:id/messages", "POST /hub/messages", "GET|POST|DELETE /mcp",
+      "GET /agent/price-book/categories", "GET /agent/price-book/items", "GET /agent/price-book/items/:id",
+      "POST /agent/price-book/items", "POST /agent/price-book/items/:id/proposals",
     ]);
   });
 
@@ -767,12 +782,12 @@ describe("the Scout key is answered with the Scout training profile", () => {
     ]);
   });
 
-  it("every Scout post in a training thread is pending_approval, even when it asks for 'draft'", async () => {
+  it("every Scout post in a training thread is published, even when it asks for 'draft' (amendment 16b's forced-pending is gone, Kyle 2026-11-24)", async () => {
     const scout = await mint({ agentRole: "scout", scopes: SCOUT_SCOPES, hubThreadKinds: ["training"] });
     const res = await post(scout, { thread_id: trainingThreadId, body: "Try the neutral bar first.", status: "draft", idempotency_key: key() });
     expect(res.status).toBe(201);
-    expect(res.body.status).toBe("pending_approval");
-    expect((await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } })).status).toBe("pending_approval");
+    expect(res.body.status).toBe("posted");
+    expect((await prisma.hubMessage.findUniqueOrThrow({ where: { id: res.body.messageId } })).status).toBe("posted");
     // Everywhere else 'draft' is still kept.
     const admin = await mint({ scopes: ["hub:read", "hub:draft", "team:reply"] });
     const keep = await post(admin, { thread_id: teamThreadId, body: "A held team note.", status: "draft", idempotency_key: key() });
@@ -867,8 +882,8 @@ describe("the idempotency transaction has room for slow effects", () => {
   }, 30_000);
 });
 
-describe("an agent draft is announced and offered to the auto-send rule", () => {
-  it("fires the hub fan-out for the new draft, runs the BA8 evaluation, and with every category off it stays pending_approval and sends nothing", async () => {
+describe("an agent message is announced and handed to the one direct send", () => {
+  it("fires the hub fan-out for the new message, runs the direct send (the guards, then hubSend), and never leaves it waiting for approval", async () => {
     const token = await mint();
     const events: HubBusEvent[] = [];
     const stop = subscribeHub((e) => events.push(e));
@@ -880,9 +895,10 @@ describe("an agent draft is announced and offered to the auto-send rule", () => 
       expect(events).toContainEqual({ type: "message", threadId: res.body.threadId, messageId: id });
       expect(offered.messageIds).toEqual([id]);
       const row = await prisma.hubMessage.findUniqueOrThrow({ where: { id } });
-      expect(row.status).toBe("pending_approval");
+      expect(row.status).not.toBe("pending_approval");
+      expect(row.status).toBe("sent");
       expect(await prisma.hubAuditLog.count({ where: { messageId: id, action: "message_auto_approved" } })).toBe(0);
-      expect(sent.emails).toHaveLength(0);
+      expect(await prisma.hubAuditLog.count({ where: { messageId: id, action: "message_sent_directly" } })).toBe(1);
     } finally {
       stop();
     }

@@ -45,7 +45,7 @@ vi.mock("googleapis", () => {
 import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { createMessageRow, ensureTeamThread, ensureThreadFor, postMessage, type HubReader } from "../src/services/hub";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { agentRolesFor, techReader } from "../src/services/hubTech";
 import { subscribeHub, type HubBusEvent } from "../src/services/hubBus";
 import { saveCrmLogin, setPowers, setPrincipal } from "../src/services/crmLogin";
@@ -187,7 +187,7 @@ describe("the home button's count: waitingApproval on /hub/badge", () => {
   async function draftOnCustomer(n: number) {
     const customer = await prisma.customer.create({ data: { name: `${TAG} Jane ${randomUUID().slice(0, 4)}`, phone: "6155550101", email: `jane-${randomUUID().slice(0, 6)}@hubfieldagent.example` } });
     const thread = await ensureThreadFor({ customerId: customer.id });
-    for (let i = 0; i < n; i++) await createDraftMessage(AI, { threadId: thread.id, channel: "email", category: "thread_reply", subject: `Tuesday ${i}`, body: "We can be there Tuesday.", });
+    for (let i = 0; i < n; i++) await waitingDraft(AI, { threadId: thread.id, channel: "email", category: "thread_reply", subject: `Tuesday ${i}`, body: "We can be there Tuesday.", });
   }
   async function login(personId: string, opts: { powers?: string[]; principal?: boolean }) {
     const row = await saveCrmLogin(personId, { username: `u-${personId.slice(-6)}`, role: "owner", password: PASS });

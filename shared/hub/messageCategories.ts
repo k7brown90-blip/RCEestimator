@@ -13,9 +13,9 @@
  *     puts it on every text of that type (the opt-in confirmation: it is the A2P sample and must carry
  *     the opt-out wording whoever it goes to); "never" never does (internal texts). A marketing text carries it every time, by class, whatever the
  *     entry says.
- *   * autoSendEligible: whether Kyle's auto-send allowlist (BA8, all OFF) may ever switch it on.
- *   * lengthCap, allowsPrices, customerFacing: what BA8 checks before a draft in an eligible category may
- *     go out without a person pressing Approve (shared/hub/autoSendCategories.ts is the filtered view).
+ *   * customerFacing: false for a message that never reaches a customer (internal texts, in-app posts).
+ *     (The auto-send fields autoSendEligible, lengthCap and allowsPrices are gone: Kyle 2026-11-24 removed the
+ *     "Auto-send rules" - an agent's message to a customer is sent when it is posted.)
  *
  * There is NO review-request entry: a review is never sent by text (addendum v2).
  */
@@ -32,22 +32,14 @@ export interface MessageCategory {
   messageClass: MessageClass;
   purposeKey: SmsPurposeKey | null;
   footer: FooterRule;
-  autoSendEligible: boolean;
-  /** Longest body an auto-sent message of this type may have. */
-  lengthCap: number;
-  /** True when a dollar amount may appear in an auto-sent message of this type. */
-  allowsPrices: boolean;
   /** False for a message that never reaches a customer (internal texts). */
   customerFacing: boolean;
 }
 
-/** The default length cap for an auto-sent message: a short text, not a letter. */
-export const DEFAULT_AUTO_SEND_LENGTH_CAP = 320;
-
-const transactional = (key: string, label: string, purposeKey: SmsPurposeKey, autoSendEligible = false, footer: FooterRule = "first"): MessageCategory =>
-  ({ key, label, messageClass: "transactional", purposeKey, footer, autoSendEligible, lengthCap: DEFAULT_AUTO_SEND_LENGTH_CAP, allowsPrices: false, customerFacing: true });
-const internal = (key: string, label: string, autoSendEligible = false): MessageCategory =>
-  ({ key, label, messageClass: "internal", purposeKey: null, footer: "never", autoSendEligible, lengthCap: DEFAULT_AUTO_SEND_LENGTH_CAP, allowsPrices: false, customerFacing: false });
+const transactional = (key: string, label: string, purposeKey: SmsPurposeKey, footer: FooterRule = "first"): MessageCategory =>
+  ({ key, label, messageClass: "transactional", purposeKey, footer, customerFacing: true });
+const internal = (key: string, label: string): MessageCategory =>
+  ({ key, label, messageClass: "internal", purposeKey: null, footer: "never", customerFacing: false });
 
 export const MESSAGE_CATEGORY_LIST: readonly MessageCategory[] = [
   transactional("consultation_scheduled", "Consultation scheduled", "consultation"),
@@ -55,21 +47,20 @@ export const MESSAGE_CATEGORY_LIST: readonly MessageCategory[] = [
   transactional("visit_rescheduled", "Visit rescheduled", "reschedule"),
   transactional("visit_cancelled", "Visit cancelled", "appointment_cancelled"),
   transactional("confirmation_request", "Appointment confirmation request", "appointment_confirmation"),
-  transactional("visit_reminder", "Appointment reminder", "appointment_reminder", true),
+  transactional("visit_reminder", "Appointment reminder", "appointment_reminder"),
   transactional("confirmation_reply", "Reply to a confirmation", "appointment_confirmation"),
   transactional("reschedule_reply", "Reply to a reschedule request", "reschedule"),
   transactional("cancel_request_reply", "Reply to a cancellation request", "cancellation_request"),
-  transactional("opt_in_confirmation", "Text alerts opt-in confirmation", "text_alerts_confirmed", false, "always"),
-  transactional("lead_first_response", "First reply to a new request", "request_received", true),
+  transactional("opt_in_confirmation", "Text alerts opt-in confirmation", "text_alerts_confirmed", "always"),
+  transactional("lead_first_response", "First reply to a new request", "request_received"),
   transactional("thread_reply", "Reply in a conversation", "thread_reply"),
   internal("internal_alert", "Alert to Kyle or the operator"),
   internal("tech_notice", "Notice to a technician"),
-  // In-app posts that never reach a customer (BA8 lists team_internal; amendment 16b adds training_reply).
-  // W2 (Kyle 2026-11-23): team_internal is NO LONGER an owner rule. A Team, group or crew post by an AI is published by its author KEY's own
-  // "Team posts publish immediately" box (Settings -> Agent keys, services/hubAutoSend.ts evaluateTeamPost), so it leaves the
-  // "AI auto-send rules" card (one tool for one task). training_reply stays an owner rule (amendment 16b).
+  // In-app posts that never reach a customer. A Team, group or crew post by an AI is published by its author KEY's own
+  // "Team posts publish immediately" box (Settings -> Agent keys, services/hubAgentSend.ts publishTeamPost); a Training reply is published
+  // when it is posted (Kyle 2026-11-24, no check-ins).
   internal("team_internal", "Team post by an AI"),
-  internal("training_reply", "Reply in a Training thread", true),
+  internal("training_reply", "Reply in a Training thread"),
 ];
 
 const BY_KEY = new Map(MESSAGE_CATEGORY_LIST.map((c) => [c.key, c]));

@@ -163,7 +163,7 @@ export function SendEmailPanel({
 }) {
   const queryClient = useQueryClient();
   const radioName = useId();
-  // The AI admin's free-form Message is not sent: it becomes a draft Kyle approves (work order agent-team, U4b). Unknown session: sends as before.
+  // The AI admin's free-form Message is sent like anyone's (Kyle 2026-11-24, no check-ins; it used to wait for Kyle's approval), but it names the address masked.
   const aiAdmin = useSession()?.kind === "ai-admin";
   const [open, setOpen] = useState(startOpen);
   const [chosen, setChosen] = useState<EmailKind | null>(null);
@@ -279,7 +279,7 @@ export function SendEmailPanel({
 
   const finish = () => {
     void queryClient.invalidateQueries({ queryKey: ["email-deliveries"] });
-    // The record's Conversation timeline lists this email too, and a draft shows in Messages -> Waiting for approval.
+    // The record's Conversation timeline lists this email too (an AI admin's shows there as sent by "AI admin").
     refreshHub(queryClient);
     for (const key of REFRESH_KEYS) void queryClient.invalidateQueries({ queryKey: key });
     record?.onSent?.();
@@ -308,9 +308,7 @@ export function SendEmailPanel({
         setBody("");
         const everyone = message.cc && message.cc.length > 0 ? `${message.to}, cc ${message.cc.join(", ")}` : message.to;
         setNotice(
-          message.drafted
-            ? `Left for Kyle's approval. It goes to ${everyone} once he approves it, from Messages → Waiting for approval.`
-            : message.suppressed
+          message.suppressed
             ? `Sent to ${everyone}. Note: this address unsubscribed from marketing email — this was a direct reply, not a campaign send.`
             : `Sent to ${everyone}.`,
         );
@@ -345,12 +343,12 @@ export function SendEmailPanel({
   const canSend = active === "message"
     ? Boolean(subject.trim() && body.trim())
     : Boolean(who);
-  // The AI admin's Message names who it would go to, masked, and says whose approval it waits for.
-  const forApproval = aiAdmin && active === "message";
+  // The AI admin's Message names who it goes to, masked.
+  const maskedSend = aiAdmin && active === "message";
   const sendLabel = send.isPending
     ? "Sending…"
-    : forApproval
-      ? who ? `Send for Kyle's approval to ${maskEmail(who)}` : "Send for Kyle's approval"
+    : maskedSend
+      ? who ? `Send to ${maskEmail(who)}` : "Send"
       : !record
         ? "Send"
         : who ? `Send ${sendWords} to ${who}` : `Send ${sendWords}`;

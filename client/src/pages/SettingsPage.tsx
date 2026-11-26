@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
+import type { TaxRepriceOutcome } from "../lib/api";
 import { PowerLockNote } from "../components/PowerLockNote";
 import { useCan } from "../lib/session";
 import type { CompanyProfile, LegalInfo, OperatingHours, PayrollSettings, PurchasingSettings, Territory } from "../lib/api";
@@ -12,7 +13,6 @@ import { AdminLoginSection } from "./AdminLoginSection";
 import { AgentKeysSection } from "./AgentKeysSection";
 import { AgentEventsSection } from "./AgentEventsSection";
 import { AgentWebhooksSection } from "./AgentWebhooksSection";
-import { AutoSendRulesSection } from "./AutoSendRulesSection";
 import { MessageRemindersSection } from "./MessageRemindersSection";
 import { MessageAuditLogSection } from "./MessageAuditLogSection";
 
@@ -189,12 +189,15 @@ function SectionCard({ title, subtitle, children }: { title: string; subtitle?: 
   );
 }
 
-function Field({ label, value, onChange, placeholder, type = "text" }: {
+function Field({ label, value, onChange, placeholder, type = "text", disabled, title }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   type?: string;
+  /** Greyed, with the reason as a tooltip (CLAUDE.md: greyed with a reason, never hidden). */
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
     <label className="text-sm font-medium">
@@ -204,9 +207,126 @@ function Field({ label, value, onChange, placeholder, type = "text" }: {
         type={type}
         value={value}
         placeholder={placeholder}
+        disabled={disabled}
+        title={title}
         onChange={(e) => onChange(e.target.value)}
       />
     </label>
+  );
+}
+
+const pctText = (rate: number | null) => (rate === null ? "—" : `${Math.round(rate * 100_000) / 1000}%`);
+
+/** What saving the sales tax rate did to the price book: how many items repriced and which hand-priced ones were left alone. */
+function TaxRepriceResult({ outcome }: { outcome: TaxRepriceOutcome }) {
+  if (outcome.status === "failed") {
+    return <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{outcome.reason}</p>;
+  }
+  if (outcome.status === "skipped_no_saved_rate") {
+    return <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">No usable sales tax rate is saved, so the price book was not repriced.</p>;
+  }
+  if (outcome.status === "current") {
+    return (
+      <p className="mt-3 rounded-md border border-rce-border bg-rce-accentBg/30 px-3 py-2 text-xs" data-testid="tax-reprice-result">
+        The price book is already priced at {pctText(outcome.newRate)}. Nothing changed.
+      </p>
+    );
+  }
+  const shown = outcome.handPriced.slice(0, 10);
+  return (
+    <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900" data-testid="tax-reprice-result">
+      <p>
+        Price book repriced at {pctText(outcome.newRate)} (was {pctText(outcome.previousRate)}): {outcome.itemsRepriced} item{outcome.itemsRepriced === 1 ? "" : "s"} repriced
+        {outcome.assembliesRepriced > 0 ? ` (${outcome.assembliesRepriced} of them assemblies)` : ""}, {outcome.handPricedCount} hand-priced item{outcome.handPricedCount === 1 ? "" : "s"} left alone.
+        {outcome.openDrafts > 0 ? ` ${outcome.openDrafts} open draft estimate${outcome.openDrafts === 1 ? "" : "s"} now read the new prices.` : ""}
+      </p>
+      {shown.length > 0 ? (
+        <ul className="mt-2 list-disc pl-5">
+          {shown.map((h) => (
+            <li key={h.itemId}><span className="font-mono">{h.itemId}</span> {h.description ?? ""} — {h.why}</li>
+          ))}
+          {outcome.handPricedCount > shown.length ? <li>…and {outcome.handPricedCount - shown.length} more (listed in the system log).</li> : null}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** Exported for its test: Settings -> Purchasing "Sales tax rate (%)". Saving a different rate reprices the price book (Kyle, 2026-11-25: "Automatically on deploy"). */
+export function PurchasingSection() {
+  const queryClient = useQueryClient();
+  const { data: settings } = useQuery({ queryKey: ["companySettings"], queryFn: api.companySettings });
+  const [purchasing, setPurchasing] = useState<PurchasingSettings>(EMPTY_PURCHASING);
+  // Edited as a percent string ("9.75"); converted to the stored decimal fraction (0.0975)
+  // only on save (Kyle, 2026-09-23: "Store the DECIMAL FRACTION, display a percent.").
+  const [taxRatePercent, setTaxRatePercent] = useState<string>(String(DEFAULT_SALES_TAX_RATE * 100));
+  const [purchasingError, setPurchasingError] = useState<string | null>(null);
+  // What the save did to the price book (server: priceBookTaxReprice.ts).
+  const [repriceOutcome, setRepriceOutcome] = useState<TaxRepriceOutcome | null>(null);
+  const [saved, setSaved] = useState(false);
+  // Repricing the book is a Kyle-only price edit (price_book_edit), exactly like the Billed labor rate: the box and Save are greyed WITH the reason.
+  const { allowed: canPrice, reason: priceReason } = useCan("price_book_edit");
+
+  useEffect(() => {
+    if (!settings?.purchasing) return;
+    setPurchasing({ ...EMPTY_PURCHASING, ...settings.purchasing });
+    setTaxRatePercent(String(Math.round((settings.purchasing.salesTaxRate ?? DEFAULT_SALES_TAX_RATE) * 100_000) / 1000));
+  }, [settings]);
+
+  const saveMutation = useMutation({
+    mutationFn: (value: PurchasingSettings) => api.saveCompanySetting("purchasing", value),
+    onSuccess: (data) => {
+      setRepriceOutcome(data.reprice ?? null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+      void queryClient.invalidateQueries({ queryKey: ["companySettings"] });
+      void queryClient.invalidateQueries({ queryKey: ["pbCatalogItems"] });
+    },
+    onError: (e: Error) => setPurchasingError(e.message),
+  });
+
+  const saveTaxRate = () => {
+    const percent = Number(taxRatePercent);
+    if (!Number.isFinite(percent) || percent < 0 || percent >= 100) {
+      setPurchasingError("Enter a percent, 0 or more and under 100 (e.g. 9.75).");
+      return;
+    }
+    setPurchasingError(null);
+    setRepriceOutcome(null);
+    const salesTaxRate = Number((percent / 100).toPrecision(12)); // 9.75 -> 0.0975, without float dust
+    setPurchasing({ ...purchasing, salesTaxRate });
+    saveMutation.mutate({ ...purchasing, salesTaxRate });
+  };
+
+  return (
+      <SectionCard
+        title="Purchasing"
+        subtitle="Sales tax is inside every sell price (Kyle, 2026-11-24: 'Tax in sell, all items'): sell = hours × shop rate + (cost × (1 + this rate)) × markup. Saving a different rate re-prices the whole price book right now: no preview, no Apply button. Items whose price was set by hand are left alone and listed below. Estimates already sent or signed keep their prices; open drafts follow the new prices. A purchase order or receipt still lands at its pre-tax cost plus this tax (Kyle, 2026-09-23: 'Get the direct cost and apply TN tax rate.'); nothing already landed is touched."
+      >
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field
+            label="Sales tax rate (%)"
+            value={taxRatePercent}
+            type="number"
+            placeholder="9.75"
+            onChange={(v) => setTaxRatePercent(v)}
+            disabled={!canPrice}
+            title={!canPrice ? priceReason ?? undefined : undefined}
+          />
+        </div>
+        <PowerLockNote power="price_book_edit" className="mt-3" />
+        {purchasingError && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{purchasingError}</p>}
+        <button
+          className="btn btn-primary mt-4"
+          type="button"
+          disabled={saveMutation.isPending || !canPrice}
+          title={!canPrice ? priceReason ?? undefined : undefined}
+          onClick={saveTaxRate}
+        >
+          {saved ? "Saved ✓" : "Save purchasing"}
+        </button>
+        {repriceOutcome ? <TaxRepriceResult outcome={repriceOutcome} /> : null}
+      </SectionCard>
   );
 }
 
@@ -219,11 +339,6 @@ export function SettingsPage() {
   const [territories, setTerritories] = useState<Territory[]>([]);
   const [selectedTerritory, setSelectedTerritory] = useState(0);
   const [legal, setLegal] = useState<LegalInfo>(EMPTY_LEGAL);
-  const [purchasing, setPurchasing] = useState<PurchasingSettings>(EMPTY_PURCHASING);
-  // Edited as a percent string ("9.75"); converted to the stored decimal fraction (0.0975)
-  // only on save (Kyle, 2026-09-23: "Store the DECIMAL FRACTION, display a percent.").
-  const [taxRatePercent, setTaxRatePercent] = useState<string>(String(DEFAULT_SALES_TAX_RATE * 100));
-  const [purchasingError, setPurchasingError] = useState<string | null>(null);
   // Employer cost on top of wages (Kyle, 2026-10-08, decision 10): a PERCENT string while typing
   // ("9.5"), saved as the number 9.5 — never a fraction. Empty clears it to "not set".
   const [employerCostPercent, setEmployerCostPercent] = useState<string>("");
@@ -236,10 +351,6 @@ export function SettingsPage() {
     if (settings.operatingHours) setHours({ ...EMPTY_HOURS, ...settings.operatingHours });
     if (settings.territories) setTerritories(settings.territories);
     if (settings.legal) setLegal({ ...EMPTY_LEGAL, ...settings.legal });
-    if (settings.purchasing) {
-      setPurchasing({ ...EMPTY_PURCHASING, ...settings.purchasing });
-      setTaxRatePercent(String((settings.purchasing.salesTaxRate ?? DEFAULT_SALES_TAX_RATE) * 100));
-    }
     setEmployerCostPercent(settings.payroll?.employerCostPercent != null ? String(settings.payroll.employerCostPercent) : "");
   }, [settings]);
 
@@ -255,18 +366,6 @@ export function SettingsPage() {
   const setP = (patch: Partial<CompanyProfile>) => setProfile((p) => ({ ...p, ...patch }));
   const setH = (patch: Partial<OperatingHours>) => setHours((h) => ({ ...h, ...patch }));
   const setL = (patch: Partial<LegalInfo>) => setLegal((l) => ({ ...l, ...patch }));
-
-  const saveTaxRate = () => {
-    const percent = Number(taxRatePercent);
-    if (!Number.isFinite(percent) || percent < 0 || percent >= 100) {
-      setPurchasingError("Enter a percent, 0 or more and under 100 (e.g. 9.75).");
-      return;
-    }
-    setPurchasingError(null);
-    const salesTaxRate = percent / 100;
-    setPurchasing({ ...purchasing, salesTaxRate });
-    saveMutation.mutate({ key: "purchasing", value: { ...purchasing, salesTaxRate } });
-  };
 
   const saveEmployerCost = () => {
     const raw = employerCostPercent.trim();
@@ -480,29 +579,7 @@ export function SettingsPage() {
         </button>
       </SectionCard>
 
-      <SectionCard
-        title="Purchasing"
-        subtitle="The sales tax rate applied to every landed line's own direct cost (Kyle, 2026-09-23: 'Get the direct cost and apply TN tax rate.'). Changing it takes effect on the next landing — nothing already landed is touched."
-      >
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field
-            label="Sales tax rate (%)"
-            value={taxRatePercent}
-            type="number"
-            placeholder="9.75"
-            onChange={(v) => setTaxRatePercent(v)}
-          />
-        </div>
-        {purchasingError && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{purchasingError}</p>}
-        <button
-          className="btn btn-primary mt-4"
-          type="button"
-          disabled={saveMutation.isPending}
-          onClick={saveTaxRate}
-        >
-          {savedKey === "purchasing" ? "Saved ✓" : "Save purchasing"}
-        </button>
-      </SectionCard>
+      <PurchasingSection />
 
       {/* ── Billed labor rate (Kyle, 2026-10-27): the hourly rate the price book is built from ── */}
       <BilledRateSection />
@@ -556,9 +633,6 @@ export function SettingsPage() {
 
       {/* ── Agent webhooks (TC4, Kyle only): where each agent's events go ── */}
       <AgentWebhooksSection />
-
-      {/* ── AI auto-send rules (BA8, Kyle only): which AI messages may go out without Approve (all OFF) ── */}
-      <AutoSendRulesSection />
 
       {/* ── Message reminders (U8, Kyle only): the hours the waiting-approval reminder may go out ── */}
       <MessageRemindersSection />

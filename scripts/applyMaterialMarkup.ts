@@ -34,6 +34,7 @@
 
 import { PrismaClient } from "@prisma/client";
 import { loadBilledLaborRate } from "../src/services/laborRate";
+import { getSalesTaxRate } from "../src/services/purchasingSettings";
 import { computePricing } from "../src/services/priceBookCatalog";
 import type { MarkupTiers } from "../src/services/priceBookPricing";
 import { isAssemblyRowType } from "../src/services/priceBookAssembly";
@@ -41,7 +42,7 @@ import { isAssemblyRowType } from "../src/services/priceBookAssembly";
 const prisma = new PrismaClient();
 const EDITED_BY = "claude:material-markup-30-2026-09-01";
 const TIER_KEYS = ["markupTier1", "markupTier2", "markupTier3", "markupTier4", "markupTier5"] as const;
-const FIELDS = ["markupTier", "companyPrice", "sellNormal", "sellDifficult", "sellVeryDifficult"] as const;
+const FIELDS = ["markupTier", "companyCostWithTax", "companyPrice", "sellNormal", "sellDifficult", "sellVeryDifficult"] as const;
 type Field = (typeof FIELDS)[number];
 
 const money = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `$${n.toFixed(2)}`);
@@ -70,6 +71,8 @@ async function main(): Promise<void> {
   const newTiers: MarkupTiers = { tier1: mult, tier2: mult, tier3: mult, tier4: mult, tier5: mult };
   const band4 = byKey.get("jobBand4Ceiling")?.numberValue ?? null;
   const rate = await loadBilledLaborRate(prisma);
+  // Sales tax is inside every sell (Kyle, 2026-11-24, "Tax in sell, all items"): the same one reader the editor uses.
+  const taxRate = await getSalesTaxRate(prisma);
 
   console.log(apply ? "APPLYING material markup change" : "DRY RUN — no writes (pass --apply to write)");
   console.log(`Markup tiers: ${Object.values(oldTiers).map((t) => `×${t}`).join(" / ")}  →  ×${mult} in every band (${Math.round((mult - 1) * 100)}%)`);
@@ -100,9 +103,9 @@ async function main(): Promise<void> {
   let materialBefore = 0, materialAfter = 0;
   for (const a of withCost) {
     const input = { rowType: a.rowType, companyCost: a.companyCost, laborNormal: a.laborNormal, laborDifficult: a.laborDifficult, laborVeryDifficult: a.laborVeryDifficult };
-    const atOld = computePricing(input, oldTiers, rate);
+    const atOld = computePricing(input, oldTiers, rate, taxRate);
     if (!same(atOld.companyPrice, a.companyPrice)) drift += 1;
-    const next = computePricing(input, newTiers, rate);
+    const next = computePricing(input, newTiers, rate, taxRate);
     const audits = FIELDS.filter((f) => !same((a as Record<string, unknown>)[f], (next as unknown as Record<string, unknown>)[f]))
       .map((f) => ({ field: f, oldValue: (a as Record<string, unknown>)[f] ?? null, newValue: (next as unknown as Record<string, unknown>)[f] ?? null }));
     if (a.companyPrice !== null) materialBefore += a.companyPrice;

@@ -34,8 +34,8 @@
  *           leg must stay off, which is Kyle's env flip after A2P.
  *
  * Nothing here is on a route a bot can reach: the routes that call it (routes/hub.ts) are the CRM's own
- * session routes behind the approve_drafts power, and the auto-send rule (services/hubAutoSend.ts) calls it
- * only after the owner's switch AND the hubAutoSend gate are on.
+ * session routes behind the approve_drafts power, and an AI agent's own customer message (services/hubAgentSend.ts
+ * sendAgentMessageNow, Kyle 2026-11-24) calls it after the kill switch, the key's Allow writes and the channel's gate pass.
  *
  * Writers of HubMessage.status here, all of them: the claim (approved -> approving, conditional, so two
  * senders cannot both send), then exactly one of sent / posted, approved (held), blocked or failed; and

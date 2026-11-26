@@ -32,6 +32,7 @@ import { adminLoginRouter } from "./routes/adminLogin";
 import { agentKeysRouter } from "./routes/agentKeys";
 import { hubEventsRouter } from "./routes/hubEvents";
 import { hubRouter } from "./routes/hub";
+import { agentPriceBookRouter } from "./routes/agentPriceBook";
 import { handleMcpNotPost, handleMcpPost } from "./mcp/agentServer";
 import { emitHubEventSafe } from "./services/hubEvents";
 import { announceThreadMoved, returnThreadToLead } from "./services/hub";
@@ -39,6 +40,7 @@ import { ownerSettingsRouter } from "./routes/ownerSettings";
 import { crmLoginsRouter } from "./routes/crmLogins";
 import { isOwnerSettingKey } from "./services/ownerSettings";
 import { requireKylePower, givesCostOrHours } from "./middleware/kylePowers";
+import { repriceBookForTaxRate, type TaxRepriceResult } from "./services/priceBookTaxReprice";
 import { accessLogMiddleware } from "./middleware/accessLog";
 import { resolveWalkthroughRows, walkthroughRowsBodySchema } from "./services/walkthroughMatch";
 import { proposeWalkthroughForDraft, walkthroughTextBodySchema } from "./services/aiProposer";
@@ -1583,6 +1585,8 @@ app.use(agentKeysRouter);
 app.use(hubEventsRouter);
 // The CRM's Messages (work order agent-team, U2/U3): the record conversation and the Messages page. Session gate; no new public route.
 app.use(hubRouter);
+// The agents' PRICE BOOK door (Kyle 2026-11-24): /agent/price-book/*, agent keys only (AGENT_KEY_ROUTES, agentOnly). Never public, never a session route.
+app.use(agentPriceBookRouter);
 // The ONE who-am-I (work order agent-team, HA2): kind, name, role, isKyle, powers. Behind the
 // session gate, NOT on the public allowlist. No token and no hash in the answer.
 app.get("/auth/session", asyncHandler(async (req, res) => { await handleAuthSession(req, res); }));
@@ -4090,7 +4094,9 @@ app.get("/crm/financing-plans", asyncHandler(async (_req, res) => {
   res.json({ plans: await getFinancingPlans() });
 }));
 
-app.put("/crm/settings/:key", asyncHandler(async (req, res) => {
+// Saving the Purchasing card reprices the whole price book at the new sales tax rate (Kyle, 2026-11-25: "Automatically on deploy" and on
+// every rate save), so it is a price_book_edit action like the Billed labor rate: a session without that power is refused.
+app.put("/crm/settings/:key", requireKylePower("price_book_edit", (req) => req.params.key === "purchasing"), asyncHandler(async (req, res) => {
   const key = readParam(req, "key");
   if (!SETTING_KEYS.includes(key as (typeof SETTING_KEYS)[number])) {
     res.status(400).json({ error: `Unknown settings key. Valid keys: ${SETTING_KEYS.join(", ")}` });
@@ -4119,13 +4125,34 @@ app.put("/crm/settings/:key", asyncHandler(async (req, res) => {
     }
     toStore = checked.value;
   }
+  // The sales tax rate is a decimal FRACTION that every price in the book is built from (Kyle, 2026-11-24, "Tax in sell, all items"):
+  // a percent stored where a fraction belongs (9.75) would be read as no usable rate, so it is refused here instead of saved.
+  if (key === "purchasing") {
+    const rate = (toStore as { salesTaxRate?: unknown } | null)?.salesTaxRate;
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate >= 1) {
+      res.status(400).json({ error: "The sales tax rate must be a decimal fraction from 0 up to (not including) 1 - 0.0975 for 9.75%." });
+      return;
+    }
+  }
   const valueJson = JSON.stringify(toStore);
-  const row = await prisma.companySetting.upsert({
-    where: { key },
-    update: { valueJson },
-    create: { key, valueJson },
-  });
-  res.json({ key: row.key, value: JSON.parse(row.valueJson), updatedAt: row.updatedAt });
+  // Saving a different sales tax rate reprices the price book now (priceBookTaxReprice.ts: one transaction, hand-priced items left
+  // alone and counted). The save RIDES IN that transaction, so the rate and the book move together: if the reprice fails nothing is
+  // saved, Settings and the book still agree, and the screen says so - never a saved rate over a book still priced at the old one.
+  let reprice: TaxRepriceResult | undefined;
+  if (key === "purchasing") {
+    try {
+      reprice = await repriceBookForTaxRate(prisma, { trigger: "settings-save", saveSetting: valueJson });
+    } catch (err) {
+      logSystemEvent("error", "priceBookTaxReprice", "Price book reprice failed - the new sales tax rate was NOT saved; the book and Settings are unchanged", { route: "PUT /crm/settings/purchasing", error: err instanceof Error ? err.message : String(err) });
+      const reason = "The price book could not be repriced just now, so the new sales tax rate was NOT saved and nothing changed. Save again in a moment.";
+      res.status(500).json({ error: reason, reprice: { status: "failed", reason } });
+      return;
+    }
+  }
+  const row = reprice
+    ? await prisma.companySetting.findUniqueOrThrow({ where: { key } })
+    : await prisma.companySetting.upsert({ where: { key }, update: { valueJson }, create: { key, valueJson } });
+  res.json({ key: row.key, value: JSON.parse(row.valueJson), updatedAt: row.updatedAt, ...(reprice ? { reprice } : {}) });
 }));
 
 const analyticsRangeQuerySchema = z.object({

@@ -188,16 +188,17 @@ describe("POST /settings/agent-keys (create)", () => {
     const pin = await pinToken();
     const scout = await create(pin, { name: "Scout", agentRole: "scout" });
     // W2 (Kyle 2026-11-23): Scout and Claude Code read and post in the Team chats and are no longer limited to one kind of thread.
+    // Kyle 2026-11-24: every role but Other also reads the price book (pricebook:read).
     expect(scout.body.key.scopes.sort()).toEqual(["leads:dupcheck", "leads:draft", "marketing:read",
-      "media:marketing:read", "team:read", "team:reply", "training:read", "training:write"].sort());
+      "media:marketing:read", "pricebook:read", "team:read", "team:reply", "training:read", "training:write"].sort());
     expect(scout.body.key.hubThreadKinds).toEqual([]);
     const claude = await create(pin, { name: "Claude Code", agentRole: "claude_code" });
-    expect(claude.body.key.scopes.sort()).toEqual(["dev:read", "dev:write", "team:read", "team:reply"]);
+    expect(claude.body.key.scopes.sort()).toEqual(["dev:read", "dev:write", "pricebook:read", "team:read", "team:reply"]);
     expect(claude.body.key.hubThreadKinds).toEqual([]);
     // A CFO key can be made, and gets its own defaults.
     const cfo = await create(pin, { name: "CFO", agentRole: "cfo" });
     expect(cfo.status).toBe(201);
-    expect(cfo.body.key.scopes.sort()).toEqual(["finance:read", "team:read", "team:reply"]);
+    expect(cfo.body.key.scopes.sort()).toEqual(["finance:read", "pricebook:read", "team:read", "team:reply"]);
     const custom = await create(pin, { name: "Narrow", agentRole: "admin", scopes: ["hub:read"], hubThreadKinds: ["team", "dev"] });
     expect(custom.body.key.scopes).toEqual(["hub:read"]);
     expect(custom.body.key.hubThreadKinds.sort()).toEqual(["dev", "team"]);

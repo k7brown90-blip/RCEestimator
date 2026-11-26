@@ -21,6 +21,7 @@ import { HubError, findVisibleThread, maskedRecipient, unreadCounts, type HubRea
 import type {
   TimelineEmail, TimelineEntry, TimelineMessage, TimelineNote, TimelineResponse,
 } from "../../shared/hub/views";
+import { wasSentDirectly } from "../../shared/hub/views";
 
 export type TimelineTarget =
   | { customerId: string }
@@ -181,6 +182,7 @@ export async function buildTimeline(
         deletedBy: deleted ? whoDeleted.get(m.id) ?? m.deletedBy : null, deletedReason: deleted ? m.deletedReason : null,
         editedAt: iso(m.editedAt), createdAt: m.createdAt.toISOString(), sentAt: iso(m.sentAt),
         emailDelivery: m.emailDelivery ? emailOf({ ...m.emailDelivery, visitId: m.emailDelivery.visitId }) : null,
+        sentDirectly: wasSentDirectly(m),
       };
       entries.push({ type: "message", id: `message:${m.id}`, at: message.createdAt, visitId: m.visitId, jobLabel: labelFor(m.visitId), message });
     }

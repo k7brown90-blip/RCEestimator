@@ -33,7 +33,7 @@ import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { hashPin } from "../src/middleware/pinAuth";
 import { ensureThreadFor, type HubReader } from "../src/services/hub";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { saveCrmLogin, setPowers } from "../src/services/crmLogin";
 import { saveAdminLogin } from "../src/services/adminLogin";
 import { CRM_POWERS } from "../shared/crmPowers";
@@ -124,10 +124,10 @@ async function account(over: { smsConsent?: boolean | null } = {}) {
   return { customer, thread, phone };
 }
 async function emailDraft(threadId: string, over: Record<string, unknown> = {}) {
-  return (await createDraftMessage(AI, { threadId, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday.", ...over })).message;
+  return (await waitingDraft(AI, { threadId, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday.", ...over })).message;
 }
 async function textDraft(threadId: string, category = "confirmation_request", body = "We can be there Tuesday.") {
-  return (await createDraftMessage(AI, { threadId, channel: "sms", category, body })).message;
+  return (await waitingDraft(AI, { threadId, channel: "sms", category, body })).message;
 }
 const events = (messageId: string) => prisma.hubEvent.findMany({ where: { type: "approval.decided", payloadJson: { contains: messageId } } });
 const audits = (messageId: string, action: string) => prisma.hubAuditLog.count({ where: { messageId, action } });
@@ -169,7 +169,7 @@ describe("the approve_drafts gate on all three decisions", () => {
     await prisma.technician.delete({ where: { id: tech.id } });
   });
 
-  it("no route, agent door or tool file imports the hubSend function: only the card registry (Approve's run) and the auto-send rule do", () => {
+  it("no route, agent door or tool file imports the hubSend function: only the card registry (Approve's run) and the agents' direct send do (Kyle 2026-11-24: the auto-send rule file became services/hubAgentSend.ts)", () => {
     const root = path.resolve(__dirname, "..", "src");
     const files: string[] = [];
     const walk = (dir: string) => {
@@ -182,7 +182,7 @@ describe("the approve_drafts gate on all three decisions", () => {
     walk(root);
     const importsFunction = /import\s*\{[^}]*\bhubSend\b[^}]*\}\s*from/;
     const users = files.filter((f) => importsFunction.test(readFileSync(f, "utf8"))).map((f) => path.relative(root, f).replace(/\\/g, "/")).sort();
-    expect(users).toEqual(["services/hubActions/registry.ts", "services/hubAutoSend.ts"]);
+    expect(users).toEqual(["services/hubActions/registry.ts", "services/hubAgentSend.ts"]);
   });
 });
 

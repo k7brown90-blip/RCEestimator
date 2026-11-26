@@ -54,6 +54,19 @@ describe("ThreadDrawer: a crew thread", () => {
     expect(within(dialog).queryByTestId("approval-card")).toBeNull();
   });
 
+  // Kyle 2026-11-24 (agents act without check-ins): "no approval step" is said only of an AI email or text the server marks sentDirectly; one a person
+  // approved (older history, an old card approved since) must not be mislabelled.
+  it("an AI email sent on its own says 'no approval step'; one a person approved does not", async () => {
+    vi.spyOn(api, "hubApprovals").mockResolvedValue(approvalsResponse([]));
+    const dialog = await open(threadDetail([
+      threadMessage({ id: "m-1", authorType: "ai_agent", authorDisplay: "RCE Admin", channel: "email", direction: "outbound", status: "sent", body: "Direct one.", sentDirectly: true }),
+      threadMessage({ id: "m-2", authorType: "ai_agent", authorDisplay: "RCE Admin", channel: "email", direction: "outbound", status: "sent", body: "Approved one.", sentDirectly: false }),
+    ]));
+    const lines = within(dialog).getAllByTestId("ai-sent-line");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toHaveTextContent("Sent by RCE Admin (AI), no approval step");
+  });
+
   it("posts a message to the crew", async () => {
     const dialog = await open(threadDetail([]));
     const posted = vi.spyOn(api, "postHubMessage").mockResolvedValue({ id: "m-9" });

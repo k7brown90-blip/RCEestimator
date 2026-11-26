@@ -9,6 +9,7 @@
  * would multiply every landed cost by ten.
  */
 
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { parseJsonObject } from "../lib/json";
 import { logSystemEvent } from "./systemEvents";
@@ -23,9 +24,9 @@ export const DEFAULT_SALES_TAX_RATE = 0.0975;
  * percent instead of a fraction (>= 1) all fall back to the default rate and
  * log the fallback — never to 0, which would silently under-cost every line.
  */
-export async function getSalesTaxRate(): Promise<number> {
+export async function getSalesTaxRate(db: PrismaClient | Prisma.TransactionClient = prisma): Promise<number> {
   try {
-    const row = await prisma.companySetting.findUnique({ where: { key: "purchasing" } });
+    const row = await db.companySetting.findUnique({ where: { key: "purchasing" } });
     const raw = parseJsonObject<{ salesTaxRate?: unknown }>(row?.valueJson);
     const rate = raw?.salesTaxRate;
     if (typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate < 1) {
@@ -49,4 +50,17 @@ export async function getSalesTaxRate(): Promise<number> {
     );
     return DEFAULT_SALES_TAX_RATE;
   }
+}
+
+/**
+ * The rate Kyle has actually SAVED - null when the setting is missing or unusable, never the default.
+ * The one place that must not guess: the price-book reprice (priceBookTaxReprice.ts) rewrites every
+ * item's sell from this number, so a rate nobody typed (the fallback above) must never reach it.
+ * Same parse as getSalesTaxRate, minus the fallback and the logging.
+ */
+export async function readSavedSalesTaxRate(db: PrismaClient | Prisma.TransactionClient = prisma): Promise<number | null> {
+  const row = await db.companySetting.findUnique({ where: { key: "purchasing" } });
+  const raw = parseJsonObject<{ salesTaxRate?: unknown }>(row?.valueJson);
+  const rate = raw?.salesTaxRate;
+  return typeof rate === "number" && Number.isFinite(rate) && rate >= 0 && rate < 1 ? rate : null;
 }

@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { PowerLockNote } from "../components/PowerLockNote";
 import { useCan } from "../lib/session";
+import { laborSourceText } from "../../../shared/priceBookLaborSource";
 import { api, fetchProtectedObjectUrl } from "../lib/api";
 import type {
   PbCatalogAtomic,
@@ -28,6 +29,8 @@ import type {
 } from "../lib/api";
 
 const money = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `$${v.toFixed(2)}`);
+/** Why "Cost + tax" can be empty for an item that has a cost: either the book has not been repriced for sales tax yet, or the price was set by hand. */
+const NO_TAX_IN_COST_TIP = "No cost + tax yet: the price book has not been repriced for sales tax (save Settings → Purchasing, Sales tax rate, once), or this item's price was set by hand and the reprice left it alone.";
 const hours = (v: number | null | undefined) => (v === null || v === undefined ? "—" : String(v));
 
 const ROW_TYPES = ["MATERIAL + LABOR", "LABOR ONLY", "MATERIAL ONLY"] as const;
@@ -487,7 +490,7 @@ export function PriceBookCatalogPage() {
         <div key={sub || "(none)"} className="space-y-1">
           {sub ? <div className="text-xs font-semibold uppercase tracking-wide text-rce-muted">{sub}</div> : null}
           <div className="overflow-x-auto rounded-lg border border-rce-border/70">
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[800px] text-sm">
               <thead>
                 <tr className="bg-rce-surface text-left text-xs uppercase tracking-wide text-rce-muted">
                   <th className="px-2 py-1.5">ID</th>
@@ -495,6 +498,7 @@ export function PriceBookCatalogPage() {
                   <th className="px-2 py-1.5">Unit</th>
                   <th className="px-2 py-1.5">Type</th>
                   <th className="px-2 py-1.5 text-right">Cost</th>
+                  <th className="px-2 py-1.5 text-right" title="Cost with the sales tax in it. Sell is built from this.">Cost + tax</th>
                   <th className="px-2 py-1.5 text-right">Hrs N/D/VD</th>
                   <th className="px-2 py-1.5 text-right">Sell N</th>
                   <th className="px-2 py-1.5 text-right">Sell D</th>
@@ -521,6 +525,12 @@ export function PriceBookCatalogPage() {
                       )}
                     </td>
                     <td className="px-2 py-1.5 text-right">{money(it.companyCost)}</td>
+                    <td
+                      className="px-2 py-1.5 text-right"
+                      title={it.companyCost !== null && it.companyCostWithTax == null ? NO_TAX_IN_COST_TIP : undefined}
+                    >
+                      {money(it.companyCostWithTax ?? null)}
+                    </td>
                     <td className="px-2 py-1.5 text-right text-xs text-rce-muted">
                       {hours(it.laborNormal)} / {hours(it.laborDifficult)} / {hours(it.laborVeryDifficult)}
                     </td>
@@ -881,6 +891,12 @@ function ItemDrawer({
             of typing an hours value here.
           </p>
         ) : null}
+        {/* Where the hours came from: an agent's NECA reference (edition, page, table, row), kept with the item (Kyle 2026-11-25). */}
+        {!isAssembly && laborSourceText(atomic.laborUnitBasisRaw) ? (
+          <p className="-mt-1 text-xs text-rce-muted" data-testid="labour-source">
+            <span className="font-medium text-rce-soft">Labour source:</span> {laborSourceText(atomic.laborUnitBasisRaw)}
+          </p>
+        ) : null}
         <Field label="Notes">
           <textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} />
         </Field>
@@ -1066,7 +1082,15 @@ function ItemDrawer({
             Computed pricing (tier {atomic.markupTier ?? "—"})
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-            <span className="text-rce-muted">Material w/ markup</span><span className="text-right">{money(atomic.companyPrice)}</span>
+            <span className="text-rce-muted">Cost (before tax)</span><span className="text-right">{money(atomic.companyCost)}</span>
+            <span
+              className="text-rce-muted"
+              title={atomic.companyCost !== null && atomic.companyCostWithTax == null ? NO_TAX_IN_COST_TIP : undefined}
+            >
+              Cost + tax
+            </span>
+            <span className="text-right">{money(atomic.companyCostWithTax ?? null)}</span>
+            <span className="text-rce-muted">{atomic.companyCostWithTax != null ? "Material w/ markup (tax in)" : "Material w/ markup"}</span><span className="text-right">{money(atomic.companyPrice)}</span>
             <span className="text-rce-muted">Sell — normal</span><span className="text-right font-medium">{money(atomic.sellNormal)}</span>
             <span className="text-rce-muted">Sell — difficult</span><span className="text-right">{money(atomic.sellDifficult)}</span>
             <span className="text-rce-muted">Sell — very difficult</span><span className="text-right">{money(atomic.sellVeryDifficult)}</span>
@@ -1108,12 +1132,15 @@ function ItemDrawer({
           ) : (
             <ul className="space-y-1 text-xs text-rce-muted">
               {(data?.edits ?? []).map((e) => (
-                <li key={e.id}>
+                <li key={e.id} data-testid="item-history-row">
                   <span className="text-rce-soft">{new Date(e.createdAt).toLocaleDateString()}</span>{" "}
                   <span className="font-medium">{e.field}</span>
                   {e.oldValue !== null || e.newValue !== null ? (
                     <>: {e.oldValue ?? "—"} → {e.newValue ?? "—"}</>
                   ) : null}
+                  {/* Who made the change (an agent key is named) and the reason it was made, so a proposal, its decision and a create read as a trail. */}
+                  <span className="text-rce-soft"> · {editorLabel(e.editedBy)}</span>
+                  {e.note ? <div className="pl-3 text-rce-soft">{e.note}</div> : null}
                 </li>
               ))}
             </ul>
@@ -1122,6 +1149,13 @@ function ItemDrawer({
       </div>
     </DrawerShell>
   );
+}
+
+/** Who an audit row names: an agent key by its name, the CRM session as "CRM", anything else as stored. */
+function editorLabel(editedBy: string): string {
+  if (editedBy.startsWith("agent:")) return `agent key ${editedBy.slice("agent:".length)}`;
+  if (editedBy === "human:crm-session") return "CRM";
+  return editedBy;
 }
 
 function NewItemDrawer({

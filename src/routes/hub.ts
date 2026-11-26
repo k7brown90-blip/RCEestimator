@@ -53,7 +53,9 @@
 import express from "express";
 import { z } from "zod";
 import { asyncHandler, readParam } from "../lib/routeHelpers";
-import { canApprove, requireKyle, requireKylePower } from "../middleware/kylePowers";
+import { canApprove, hasKylePower, requireKyle } from "../middleware/kylePowers";
+import { CRM_POWERS } from "../../shared/crmPowers";
+import { KIND_APPROVER_POWERS } from "../../shared/hub/cards";
 import {
   CLIENT_MESSAGE_ID_MAX, CLIENT_MESSAGE_ID_MIN, HubError, editOwnMessage, ensureThreadFor, findVisibleThread, markThreadRead, postMessageResult, readerFor,
   renameThread, setThreadStatus, softDeleteMessage, type HubReader,
@@ -302,8 +304,16 @@ hubRouter.get("/hub/approvals", withReader(async (req, res, reader) => {
 
 const decided = decisionView;
 
-// The approve_drafts power is the ONE approver gate (Kyle only at launch). Without it: 403 with the power's sentence.
-const approver = requireKylePower("approve_drafts");
+// The approve_drafts power is the ONE approver gate (Kyle only at launch); a kind with a power of its own (a price change: price_book_edit, Kyle
+// 2026-11-25 "Yes, same power") is decided by that power instead. The route lets either through; the service decides PER CARD
+// (services/hubApproval.ts requireApprover), so a price_book_edit holder cannot approve a customer send. Neither: 403 with the power's sentence.
+const approver: express.RequestHandler = (req, res, next) => {
+  if (hasKylePower(req, "approve_drafts") || Object.values(KIND_APPROVER_POWERS).some((p) => p !== undefined && hasKylePower(req, p))) {
+    next();
+    return;
+  }
+  res.status(403).json({ error: CRM_POWERS.approve_drafts.reason });
+};
 
 hubRouter.post("/hub/messages/:id/approve", approver, withReader(async (req, res, reader) => {
   res.json(decided(await approveMessage(reader, readParam(req, "id"))));

@@ -8,6 +8,11 @@
  */
 import type { HubMessageStatus } from "./model";
 
+/** The ONE rule for `sentDirectly` (both views): an AI author whose decider is the author itself (what createDraftMessage writes). */
+export function wasSentDirectly(m: { authorType: string; authorKey: string | null; decidedBy: string | null }): boolean {
+  return (m.authorType === "ai_agent" || m.authorType === "claude") && m.decidedBy !== null && m.decidedBy === m.authorKey;
+}
+
 // ── the record conversation (U2) ─────────────────────────────────────────────────────────────────
 
 /** A call note, in the exact shape the notes routes (POST/PATCH /accounts/:id/notes) return. */
@@ -71,6 +76,12 @@ export interface TimelineMessage {
   sentAt: string | null;
   /** The delivery report of the email this message sent, when it was an email. */
   emailDelivery: TimelineEmail | null;
+  /**
+   * True when an AI agent's email or text was sent on the agent's own request, with no person approving it (the message_sent_directly audit row;
+   * Kyle 2026-11-24): the row's decider is its own author. False for a person's message, for an AI message a person approved (before agents sent
+   * directly, or a card approved since), and for one an old auto-send rule approved. The screens say "no approval step" only when this is true.
+   */
+  sentDirectly: boolean;
 }
 
 interface EntryBase {
@@ -173,6 +184,12 @@ export interface ThreadMessage {
   attachments: AttachmentRef[];
   /** Job photos on this message: VisitPhoto ids already filed on the thread's job (a job thread only). */
   photoIds: string[];
+  /**
+   * True when an AI agent's email or text was sent on the agent's own request, with no person approving it (the message_sent_directly audit row;
+   * Kyle 2026-11-24): the row's decider is its own author. False for a person's message, for an AI message a person approved (before agents sent
+   * directly, or a card approved since), and for one an old auto-send rule approved. The screens say "no approval step" only when this is true.
+   */
+  sentDirectly: boolean;
 }
 
 /** One photo held on a message (HubAttachment). The bytes are fetched with the reader's own credentials. */
@@ -292,6 +309,11 @@ export interface ApprovalCardView {
      * draft that is only blocked because of its own words (or a missing address) can be fixed by editing it.
      */
     editBlockedReason: string | null;
+    /**
+     * Why Reject is greyed for THIS session on THIS card, or null: a kind with a power of its own (a price change: price_book_edit) is closed only by
+     * someone who holds it. Absent on an older server.
+     */
+    rejectBlockedReason?: string | null;
   };
   /** Which fields "Edit" lets the approver change. */
   editable: { subject: boolean; to: boolean; cc: boolean };

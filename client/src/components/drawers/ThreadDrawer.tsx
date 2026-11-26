@@ -38,7 +38,7 @@ import { useDrawerParams } from "../../lib/drawers";
 import { refreshHub, useHubApprovals } from "../../lib/hubQueries";
 import { useIsKyle } from "../../lib/session";
 import { useLead } from "../../lib/recordQueries";
-import { authorLabel, automaticTextLine, isAiAuthor, messageStatusChip, postButtonLabel, threadKindLabel, whenText } from "../../lib/hubLabels";
+import { aiSentLine, authorLabel, automaticTextLine, isAiAuthor, messageStatusChip, postButtonLabel, threadKindLabel, whenText } from "../../lib/hubLabels";
 import { sendBlockText } from "../../../../shared/hub/sendBlocks";
 import type { ThreadDetail, ThreadMessage } from "../../../../shared/hub/views";
 import { Drawer } from "../Drawer";
@@ -117,6 +117,7 @@ function MessageRow({ message, isNew }: { message: ThreadMessage; isNew: boolean
 
   const chip = messageStatusChip(message.status, message.messageClass);
   const autoLine = automaticTextLine(message);
+  const sentByAi = aiSentLine(message);
   const ai = isAiAuthor(message.authorType);
   return (
     <li
@@ -131,6 +132,7 @@ function MessageRow({ message, isNew }: { message: ThreadMessage; isNew: boolean
           {message.editedAt && <span className="text-amber-800"> · edited {whenText(message.editedAt)}</span>}
           {isNew && <span className="ml-1 font-semibold text-amber-800">New</span>}
           {autoLine && <span data-testid="automatic-text-line"> · {autoLine}</span>}
+          {sentByAi && <span data-testid="ai-sent-line"> · {sentByAi}</span>}
         </p>
         {chip && <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${chip.tone}`} title={chip.title}>{chip.label}</span>}
       </div>

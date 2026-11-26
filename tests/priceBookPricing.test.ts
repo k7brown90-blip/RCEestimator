@@ -23,6 +23,7 @@ import {
   quoteAssembly,
   resolveCostBasis,
   sellPriceFor,
+  taxInCost,
   type MarkupTiers,
   type RateConfig,
   type SupplierPriceRow,
@@ -100,11 +101,20 @@ describe("markup tiers — Atomics!W / Atomics!X", () => {
 
   it("reports 'awaiting cost' and a NULL sell price for a blank basis — never $0.00", () => {
     expect(markupTierFor(null)).toBe("awaiting cost");
-    expect(sellPriceFor(null, TIERS)).toBeNull();
+    expect(sellPriceFor(null, TIERS, 0.0975)).toBeNull();
   });
 
-  it("reproduces A016: $339.40 cost at T5 -> $475.16 sell", () => {
-    expect(sellPriceFor(339.4, TIERS)).toBeCloseTo(475.16, 8);
+  it("reproduces A016: $339.40 cost at T5 -> $475.16 sell with no tax in it (rate 0)", () => {
+    expect(sellPriceFor(339.4, TIERS, 0)).toBeCloseTo(475.16, 8);
+  });
+
+  // Kyle, 2026-11-24, "Tax in sell, all items": cost x (1 + tax) x tier multiplier, the tier read off the PRE-TAX cost.
+  it("puts the sales tax in the sell: $339.40 at 9.75% -> 339.40 x 1.0975 x 1.4", () => {
+    expect(sellPriceFor(339.4, TIERS, 0.0975)).toBeCloseTo(339.4 * 1.0975 * 1.4, 8);
+    expect(taxInCost(339.4, 0.0975)).toBeCloseTo(372.4915, 8);
+  });
+  it("chooses the tier on the PRE-TAX cost: $9.99 stays T2 although $9.99 x 1.0975 is over $10", () => {
+    expect(sellPriceFor(9.99, TIERS, 0.0975)).toBeCloseTo(9.99 * 1.0975 * TIERS.tier2, 8);
   });
 });
 

@@ -47,7 +47,7 @@ import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { saveCrmLogin, setPowers, setPrincipal } from "../src/services/crmLogin";
 import { ensureTeamThread, ensureThreadFor, postMessage, createMessageRow, type HubReader } from "../src/services/hub";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { techReader } from "../src/services/hubTech";
 import { isAllowedPushEndpoint, pushConfig, saveSubscription, sendPush, PUSH_NOT_CONFIGURED_REASON } from "../src/services/hubPush";
 import { notifyApprovers, notifyNewMessage } from "../src/services/hubNotifier";
@@ -199,7 +199,7 @@ describe("a draft waiting for approval", () => {
     await subscribe(`user:${granted.loginId}`, "granted");
     const thread = await ensureThreadFor({ customerId: customer.id });
 
-    await createDraftMessage(agent, { threadId: thread.id, channel: "email", subject: "Hello", body: "Hi Secretcustomer at 4321 Hidden Lane, call 6155559876", toAddress: "x@example.com" });
+    await waitingDraft(agent, { threadId: thread.id, channel: "email", subject: "Hello", body: "Hi Secretcustomer at 4321 Hidden Lane, call 6155559876", toAddress: "x@example.com" });
     await settle();
     const sent = myPayloads();
     expect(sent.map((s) => s.endpoint).sort()).toEqual([endpoint("granted"), endpoint("kyle")].sort());
@@ -233,7 +233,7 @@ describe("a draft waiting for approval, on a field phone (W2-D)", () => {
     await subscribe(`user:${michael.loginId}`, "michael-desk");
     const thread = await ensureThreadFor({ customerId: customer.id });
 
-    await createDraftMessage(agent, { threadId: thread.id, channel: "email", subject: "Hello", body: "Hi Secretcustomer at 4321 Hidden Lane, call 6155559876", toAddress: "x@example.com" });
+    await waitingDraft(agent, { threadId: thread.id, channel: "email", subject: "Hello", body: "Hi Secretcustomer at 4321 Hidden Lane, call 6155559876", toAddress: "x@example.com" });
     await settle();
     const sent = myPayloads();
     expect(sent.map((s) => s.endpoint).sort()).toEqual(

@@ -18,7 +18,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import {
-  HubError, approverReaderForTechnician, ensureTeamThread, findVisibleThread, unreadCounts, visibleThreadWhere, type HubReader,
+  HubError, approverReaderForTechnician, ensureTeamThread, findVisibleThread, readerHoldsPower, unreadCounts, visibleThreadWhere, type HubReader,
 } from "./hub";
 import { listApprovalCards } from "./hubCards";
 import { FIELD_CRM_ONLY_KINDS, FIELD_CRM_ONLY_REASON } from "../../shared/hub/cards";
@@ -88,7 +88,8 @@ export async function techApproverReader(technicianId: string, db: PrismaClient 
 export async function techApprovals(technicianId: string, db: PrismaClient = defaultPrisma): Promise<{ approver: HubReader | null; response: ApprovalsResponse }> {
   const approver = await techApproverReader(technicianId, db);
   if (!approver) return { approver: null, response: { cards: [], canApprove: false, approveReason: null } };
-  return { approver, response: await listApprovalCards(approver, { status: "pending", excludeKinds: FIELD_CRM_ONLY_KINDS }, true, db) };
+  // canApprove here is approve_drafts; a login holding only a kind's own power (price_book_edit) gets a list cut to that kind (hubCards).
+  return { approver, response: await listApprovalCards(approver, { status: "pending", excludeKinds: FIELD_CRM_ONLY_KINDS }, await readerHoldsPower(approver, "approve_drafts", db), db) };
 }
 
 /** A card kind only the CRM decides is refused here, by id, as well as left out of the list. */

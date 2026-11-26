@@ -20,7 +20,7 @@
  */
 import { useState } from 'react'
 import type { ApprovalCardView } from '../../../../shared/hub/views'
-import { REJECT_FIRST_HINT, REJECT_REASON_MIN, cardLocks, isActionable } from '../../../../shared/hub/approvalRules'
+import { REJECT_FIRST_HINT, REJECT_REASON_MIN, approvingLabel, cardLocks, isActionable } from '../../../../shared/hub/approvalRules'
 
 export interface EditSend {
   body: string
@@ -248,7 +248,7 @@ export function ApprovalCard({
             title={lock ?? undefined}
             onClick={approve}
           >
-            {busy ? 'Sending…' : approveLabel}
+            {busy ? approvingLabel(card) : approveLabel}
           </button>
           {card.status === 'pending_approval' && (
             <button

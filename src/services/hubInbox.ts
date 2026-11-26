@@ -15,6 +15,7 @@ import { HubError, findVisibleThread, maskedRecipient, postRefusal, unreadCounts
 import type {
   HubBadge, ThreadDetail, ThreadLastLine, ThreadMessage, ThreadRow, ThreadsResponse,
 } from "../../shared/hub/views";
+import { wasSentDirectly } from "../../shared/hub/views";
 import type { HubMessageStatus } from "../../shared/hub/model";
 
 /** The threads the Messages page lists, newest activity first. */
@@ -173,6 +174,7 @@ export async function threadDetail(
       canDelete: !deleted && (mine || reader.isKyle),
       attachments: deleted ? [] : held.get(m.id) ?? [],
       photoIds: deleted ? [] : m.photoIds,
+      sentDirectly: wasSentDirectly(m),
     };
   });
 

@@ -201,12 +201,23 @@ export function markupMultiplierFor(costBasis: number | null, tiers: MarkupTiers
 /**
  * Atomics!X — Sell Price per Unit.
  *   =IF(N(K)=0,"",K*IF(K<1,B10,IF(K<10,B11,IF(K<50,B12,IF(K<200,B13,B14)))))
+ * 2026-11-25: K is now the cost WITH sales tax (taxInCost); the tier still reads the pre-tax cost.
  * Blank cost basis produces a blank sell price — never zero.
  */
-export function sellPriceFor(costBasis: number | null, tiers: MarkupTiers): number | null {
-  const mult = markupMultiplierFor(costBasis, tiers);
+export function sellPriceFor(costBasis: number | null, tiers: MarkupTiers, taxRate: number): number | null {
+  const mult = markupMultiplierFor(costBasis, tiers); // the tier is chosen on the PRE-TAX cost
   if (mult === null || costBasis === null) return null;
-  return costBasis * mult;
+  return taxInCost(costBasis, taxRate) * mult;
+}
+
+/**
+ * A pre-tax cost with sales tax in it (Kyle, 2026-11-24: "sell = hours x shop rate + (cost x (1 + tax rate)) x 1.3"
+ * - "Tax in sell, all items"). The ONE place the tax multiplication lives: computePricing, the engine's supplier-priced
+ * path and the material cap's basis all call it, so the book can never carry two readings of "cost with tax".
+ * Unrounded - the caller rounds once, at the end.
+ */
+export function taxInCost(preTaxCost: number, taxRate: number): number {
+  return preTaxCost * (1 + taxRate);
 }
 
 // ─── Assembly-level computation ─────────────────────────────────────────────────

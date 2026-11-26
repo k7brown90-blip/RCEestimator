@@ -17,7 +17,7 @@
 
 import type { PricingFigures } from "../../shared/quoteMoney";
 import { programmeFor } from "./discounts";
-import { allSelectionCaps, type MarkupBand, type MaterialCapResult } from "./materialMarkupCap";
+import { allSelectionCaps, capBasisCost, type MarkupBand, type MaterialCapResult } from "./materialMarkupCap";
 
 export interface IssuedFiguresSource {
   tripCharge: number;
@@ -28,6 +28,8 @@ export interface IssuedFiguresSource {
   lines: ReadonlyArray<{
     option: string;
     materialCost: number | null;
+    /** Frozen cost with sales tax in it (null on estimates issued before 2026-11-25) - the cap's basis, see capBasisCost. */
+    materialCostWithTax?: number | null;
     materialSell: number | null;
     inMaterialCap: boolean;
   }>;
@@ -47,7 +49,7 @@ export function pricingFiguresFromIssued(est: IssuedFiguresSource): {
   const caps = allSelectionCaps(
     est.lines.map((l) => ({
       option: l.option,
-      materialCost: l.inMaterialCap ? l.materialCost : null,
+      materialCost: capBasisCost(l),
       materialSell: l.inMaterialCap ? l.materialSell : null,
     })),
     frozenBands,

@@ -6,14 +6,14 @@
  * Pinned here, against the real routes (agent keys minted with each role's DEFAULT scopes, writes ON, the way Kyle ticks them):
  *   - the nine roles: GET /api/hub/threads lists the Team thread for every role that holds team:read; reading it works; a Team post is `posted`;
  *     a role with no customer scope (Inventory, Facebook, Scout, Research, CFO, NEC Coach, Coding) is 403 with a reason naming "Read customer
- *     (hub:read)" on a customer thread, and Admin and Outreach draft to a customer (pending_approval, with a pending_reason);
+ *     (hub:read)" on a customer thread, and Admin and Outreach message a customer (SENT at once, Kyle 2026-11-24: no check-ins);
  *   - the 2026-11-23 Facebook bug: a hub:read-only key limited to Team threads got 200 [] and now gets 403 with the reason; a team:read key sees it;
  *   - Team posts: the key's box OFF -> pending_approval + pending_reason; access read_only/off -> refused at the gate; no draft-cap use;
  *     a customer draft still counts toward the 500 a day;
  *   - the agent-to-agent limit (429 thread_agent_limit) and a person's post resetting it;
  *   - the audit: scopeUsed is the matched scope, agentKeyName is the key's name; the scope_denied reason names the missing scopes by their card labels;
  *   - the migration's data step, run on the test database, is correct and idempotent;
- *   - a stored `team_internal: true` rule no longer resets the other rules to OFF.
+ *   - the owner's "AI auto-send rules" setting is gone (Kyle 2026-11-24): the route no longer exists and a saved row, if any, is left alone and read by nothing.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
@@ -48,7 +48,6 @@ import { hashPin } from "../src/middleware/pinAuth";
 import { mintAgentKey } from "../src/agentApi/keys";
 import { AGENT_DAILY_DRAFT_LIMIT } from "../src/agentApi/audit";
 import { THREAD_AGENT_POST_LIMIT, THREAD_LOCK_TIMEOUT_MS } from "../src/agentApi/hubDoor";
-import { getHubAutoSend } from "../src/services/hubAutoSend";
 import { ensureThreadFor } from "../src/services/hub";
 import {
   AGENT_ROLES, DEFAULT_HUB_THREAD_KINDS_BY_ROLE, DEFAULT_SCOPES_BY_ROLE, type AgentRole,
@@ -99,7 +98,11 @@ const ageAiPosts = () => prisma.hubMessage.updateMany({
   data: { createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000) },
 });
 
+// Plan P7 keeps the server-side switch for an AI's customer send (AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND, default-deny): on for this file's direct sends.
+let savedAgentSendGate: string | undefined;
 beforeAll(async () => {
+  savedAgentSendGate = process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND;
+  process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND = "on";
   savedPin = process.env.PIN_HASH;
   savedPepper = process.env.AGENT_KEY_PEPPER;
   savedEnvName = process.env.RAILWAY_ENVIRONMENT_NAME;
@@ -135,6 +138,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (savedAgentSendGate === undefined) delete process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND; else process.env.AUTOMATED_CUSTOMER_SENDS_HUB_AUTOSEND = savedAgentSendGate;
   if (savedPin === undefined) delete process.env.PIN_HASH; else process.env.PIN_HASH = savedPin;
   if (savedPepper === undefined) delete process.env.AGENT_KEY_PEPPER; else process.env.AGENT_KEY_PEPPER = savedPepper;
   if (savedEnvName === undefined) delete process.env.RAILWAY_ENVIRONMENT_NAME; else process.env.RAILWAY_ENVIRONMENT_NAME = savedEnvName;
@@ -189,12 +193,15 @@ describe("the nine roles with their default scopes (Kyle 2026-11-23: read/post/M
       });
 
       if (HAS_CUSTOMER.has(role)) {
-        it("may draft to a customer: pending_approval, with a pending_reason in plain words, and nothing is sent", async () => {
+        // Changed deliberately (Kyle 2026-11-24, "requiring them to check-in on everything defeats the purpose of the chat"): it used to wait
+        // as pending_approval with a pending_reason. A customer message by a key that holds hub:draft is SENT when it is posted.
+        it("may message a customer: it is sent at once, with no pending_reason and no not_sent_reason", async () => {
           const k = await keyFor(role);
           const res = await post(k.secret, customerDraft());
           expect(res.status, JSON.stringify(res.body)).toBe(201);
-          expect(res.body.status).toBe("pending_approval");
-          expect(res.body.pending_reason).toEqual(expect.any(String));
+          expect(res.body.status).toBe("sent");
+          expect(res.body.pending_reason).toBeNull();
+          expect(res.body.not_sent_reason).toBeNull();
           expect((await get(k.secret, "/api/hub/threads?kind=customer")).status).toBe(200);
         });
       } else {
@@ -227,7 +234,7 @@ describe("the nine roles with their default scopes (Kyle 2026-11-23: read/post/M
     expect(Object.keys(team.body.messages[0])).toEqual(expect.arrayContaining(["id", "status", "channel"]));
     const reply = await post(k.secret, { thread_id: trainingThreadId, body: "Check the neutral first.", idempotency_key: idem() });
     expect(reply.status).toBe(201);
-    expect(reply.body).toMatchObject({ status: "pending_approval", category: "training_reply" }); // 16b: a Training reply still waits
+    expect(reply.body).toMatchObject({ status: "posted", category: "training_reply" }); // Kyle 2026-11-24: 16b's forced wait is gone, a Training reply is published
     expect(DEFAULT_HUB_THREAD_KINDS_BY_ROLE.scout).toEqual([]);
   });
 
@@ -326,7 +333,8 @@ describe("review fix: scopeUsed is the scope that opened the thread's kind, not 
       ["hub.threads.get", "team:read", "ok"],
       ["hub.messages.draft", "team:reply", "ok"],
       ["hub.threads.get", "hub:read", "ok"],
-      ["hub.messages.draft", "hub:draft", "ok"],
+      // Kyle 2026-11-24: a customer message is sent when posted, and the agent audit says so (resultCode sent); a Team post is still "ok".
+      ["hub.messages.draft", "hub:draft", "sent"],
     ]);
   });
 });
@@ -471,21 +479,14 @@ describe("the agent-to-agent limit (R-j): 8 AI posts in 10 minutes with no perso
 
 // ── the owner rules ───────────────────────────────────────────────────────────────────────────────
 
-describe("the owner's AI auto-send rules after W2", () => {
-  it("a stored team_internal rule no longer resets the other rules to OFF: it is dropped on read, the rest stay as Kyle set them", async () => {
-    const valueJson = JSON.stringify({ categories: { team_internal: true, lead_first_response: true, visit_reminder: false }, changedAt: "2026-11-22T10:00:00-06:00", changedBy: "Kyle" });
+describe("the owner's AI auto-send rules are gone (Kyle 2026-11-24)", () => {
+  it("GET and PUT /owner-settings/hubAutoSend answer 400 (not a setting any more); a saved row is left in place and nothing reads it", async () => {
+    const valueJson = JSON.stringify({ categories: { team_internal: true, lead_first_response: true }, changedAt: "2026-11-22T10:00:00-06:00", changedBy: "Kyle" });
     await prisma.companySetting.upsert({ where: { key: "hubAutoSend" }, create: { key: "hubAutoSend", valueJson }, update: { valueJson } });
-    const value = await getHubAutoSend();
-    expect(value.categories).toEqual({ lead_first_response: true, visit_reminder: false });
-    expect(value.changedBy).toBe("Kyle");
-    const card = await request(app).get("/owner-settings/hubAutoSend").set(bearer(pin));
-    expect(card.status).toBe(200);
-    expect(card.body.value.categories).toEqual({ lead_first_response: true, visit_reminder: false });
-    // Saving from the card (which no longer shows team_internal) works, and an old client that still sends it is not refused.
-    const saved = await request(app).put("/owner-settings/hubAutoSend").set(bearer(pin)).send({ categories: { lead_first_response: true, team_internal: true } });
-    expect(saved.status).toBe(200);
-    expect(saved.body.value.categories).toEqual({ lead_first_response: true });
-    expect((await request(app).put("/owner-settings/hubAutoSend").set(bearer(pin)).send({ categories: { made_up: true } })).status).toBe(400);
+    expect((await request(app).get("/owner-settings/hubAutoSend").set(bearer(pin))).status).toBe(400);
+    expect((await request(app).put("/owner-settings/hubAutoSend").set(bearer(pin)).send({ categories: { lead_first_response: true } })).status).toBe(400);
+    // No DROP or DELETE: the row is still there, untouched.
+    expect((await prisma.companySetting.findUniqueOrThrow({ where: { key: "hubAutoSend" } })).valueJson).toBe(valueJson);
   });
 });
 

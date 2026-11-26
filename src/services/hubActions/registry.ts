@@ -11,18 +11,22 @@
  *   run(id, actor) what Approve does once the decision is made: the existing service, never new logic.
  *                  customer_message and team_reply both go out through hubSend.
  *
- * Kinds built now: customer_message, team_reply. contact_instead and opt_out_review are REGISTERED for
+ * Kinds built now: customer_message, team_reply and (Kyle 2026-11-24) price_change, an AI agent's proposed price, hours or name change to an
+ * existing price-book item (services/priceBookProposals.ts): Approve applies it, the price_book_edit power IS its approver gate in place of
+ * approve_drafts (approverPower; Kyle 2026-11-25 "Yes, same power"), and Edit is refused (noEdit). contact_instead and opt_out_review are REGISTERED for
  * step 6 (P2B-3/7/8): they appear in shared/hub/cards.ts with implemented false and have no `run`, so an
  * Approve on one is refused ("not handled yet") and nothing can be sent through them by accident. The
  * columns they need (HubMessage.actionKind, actionPayloadJson) already exist from U1, so step 6 adds an
  * entry here and no migration.
  */
-import type { HubMessage, HubThread } from "@prisma/client";
-import { cardHeaderLine, CARD_KINDS, isCardKind, type CardKind } from "../../../shared/hub/cards";
+import type { HubMessage, HubThread, Prisma, PrismaClient } from "@prisma/client";
+import type { CrmPower } from "../../../shared/crmPowers";
+import { cardHeaderLine, CARD_KINDS, KIND_APPROVER_POWERS, isCardKind, type CardKind } from "../../../shared/hub/cards";
 import { SMS_DISABLED_ERROR, isEditFixableReason, sendBlockText } from "../../../shared/hub/sendBlocks";
 import { twilioSendEnabled } from "../automationGate";
 import { REHEARSAL_CARD_LINE } from "../rehearsal";
 import { hubSend, type Recipient, type SendActor, type SendResult, type SmsPrepared } from "../hubSend";
+import { describePriceChange, recordPriceChangeRejected, runPriceChange } from "../priceBookProposals";
 
 export interface DescribeCtx {
   message: HubMessage;
@@ -30,6 +34,8 @@ export interface DescribeCtx {
   recipient: Recipient | null;
   /** The text's preflight (prepareSms) when the message is a text; null otherwise. */
   sms: SmsPrepared | null;
+  /** The database the card is being read from, for a kind whose card is built from live records (a price change reads the item and its assemblies). */
+  db: PrismaClient;
 }
 
 export interface CardDescription {
@@ -46,9 +52,23 @@ export interface CardDescription {
 }
 
 export interface CardKindEntry {
-  describe(ctx: DescribeCtx): CardDescription;
+  describe(ctx: DescribeCtx): CardDescription | Promise<CardDescription>;
   /** What Approve runs once the message is approved. Absent for a kind this build does not handle yet. */
   run?: (messageId: string, actor: SendActor) => Promise<SendResult>;
+  /**
+   * The CRM power that decides cards of THIS KIND, in place of approve_drafts (the one approver gate, both apps): a price change is decided by
+   * whoever holds price_book_edit (Kyle; Michael when Kyle grants it - "Yes, same power", 2026-11-25), and approve_drafts alone does NOT decide it.
+   * Enforced in services/hubApproval.ts for Approve, Edit and Reject, and the card is greyed with the power's reason for anyone who lacks it
+   * (services/hubCards.ts).
+   */
+  approverPower?: CrmPower;
+  /**
+   * Written in the SAME transaction as a Reject, after the card is claimed: the kind's own record of the refusal (a price change writes the item's
+   * PriceBookEdit row, so its history never shows a proposal still waiting after it was turned down).
+   */
+  onReject?: (tx: Prisma.TransactionClient, message: HubMessage, rejectedBy: string, reason: string) => Promise<void>;
+  /** Set for a kind whose words cannot be edited: Edit and "Send my version" are refused with this sentence. */
+  noEdit?: string;
 }
 
 /** The kind of a message: its stored actionKind when it has one, else worked out from its channel. */
@@ -155,6 +175,14 @@ export const CARD_REGISTRY: Record<CardKind, CardKindEntry> = {
   // Step 6 (P2B-3/7/8) adds `run` and a real describe; until then they are listed and cannot be approved.
   contact_instead: { describe: describeNotYet("contact_instead") },
   opt_out_review: { describe: describeNotYet("opt_out_review") },
+  // Kyle 2026-11-24 (price book for agents): an agent's proposed price, hours or name change. Approve applies it; see services/priceBookProposals.ts.
+  price_change: {
+    describe: describePriceChange,
+    run: (messageId, actor) => runPriceChange(messageId, actor),
+    approverPower: KIND_APPROVER_POWERS.price_change,
+    onReject: recordPriceChangeRejected,
+    noEdit: "A price change cannot be edited. Reject it and ask the agent to propose it again.",
+  },
 };
 
 /** The registry entry for a message's kind, or null when the stored kind is one this build has never heard of. */

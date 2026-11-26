@@ -33,7 +33,7 @@ import { subscribeHub, type HubBusEvent } from "../src/services/hubBus";
 import { buildTimeline } from "../src/services/hubTimeline";
 import { ensureThreadFor, type HubReader } from "../src/services/hub";
 import { hubSend, prepareSms } from "../src/services/hubSend";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { projectMessageRead } from "../src/agentApi/profiles";
 
 const TAG = "SmsLog";
@@ -292,7 +292,7 @@ describe("hubSend hands the words to sendSms and lets it compose (the C3 hand-of
       const a = await account();
       const thread = await ensureThreadFor({ customerId: a.customer.id });
       const AI: HubReader = { key: "ai-admin", kind: "ai-admin", display: "RCE Admin", technicianId: null, threadKinds: [], agentRole: null, agentKeyId: null, isKyle: false };
-      const { message } = await createDraftMessage(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works." });
+      const { message } = await waitingDraft(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works." });
       await prisma.hubMessage.update({ where: { id: message.id }, data: { status: "approved", decidedBy: "owner", decidedAt: new Date(), eventStart: a.visit.scheduledStart, eventEnd: a.visit.scheduledEnd } });
       const preview = await prepareSms(await prisma.hubMessage.findUniqueOrThrow({ where: { id: message.id } }), thread, prisma);
       expect(preview.ok).toBe(true);

@@ -34,7 +34,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useCan, useSession, useSessionFailed } from "../lib/session";
 import type { AgentAccessMode, AgentKeyPatchInput, AgentKeyView, AgentKeysData } from "../lib/types";
-import { AUTO_SEND_CATEGORIES } from "../../../shared/hub/autoSendCategories";
 import {
   AGENT_KEYS_AI_ADMIN_REASON, AGENT_MESSAGE_SCOPE_LABELS, AGENT_ROLES, AGENT_ROLE_LABELS, AGENT_SCOPES, AGENT_SCOPE_GROUP,
   DEFAULT_HUB_THREAD_KINDS_BY_ROLE, DEFAULT_SCOPES_BY_ROLE, HUB_THREAD_KINDS,
@@ -54,16 +53,13 @@ const WRITES_REVOKED_REASON = "This key is revoked — it can no longer write";
 const PUBLISH_REVOKED_REASON = "This key is revoked — it can no longer post";
 const PUBLISH_WRITES_OFF_REASON = "Allow writes is off for this key — it cannot post until that is ticked";
 const PUBLISH_ACCESS_REASON = "Agent access is not On — nothing an AI wrote is published until it is On";
-// The send types Kyle can switch on under "AI auto-send rules", named by the label that card shows. Read from the one
-// registry view so the two cards cannot drift apart.
-const autoSendLabel = (key: string): string => `"${AUTO_SEND_CATEGORIES.find((c) => c.key === key)?.label ?? key}"`;
-const CUSTOMER_AUTO_SEND_LABELS = AUTO_SEND_CATEGORIES.filter((c) => c.customerFacing).map((c) => `"${c.label}"`).join(" or ");
-// W2 (Kyle 2026-11-23): a Team, group or crew post is published by the key's own box; a message to a customer still waits for an Approve.
+// W2 (Kyle 2026-11-23): a Team, group or crew post is published by the key's own box. Kyle 2026-11-24 (no check-ins): an email or text to a customer
+// and a reply in a Training thread go out as soon as the key posts them; only a price book change it proposes still waits for an Approve.
 const writesConfirmText = (name: string): string =>
   `Let "${name}" post in Messages? Its posts in the Team, group and crew chats are published at once when "Team posts publish immediately" is ticked for it `
-  + `(and wait for your Approve when it is not). A message to a customer waits for your Approve unless one of these rules is on under AI auto-send rules: `
-  + `${CUSTOMER_AUTO_SEND_LABELS}. Its replies in a Training thread wait unless ${autoSendLabel("training_reply")} is on. `
-  + "While Agent access is paused or off, nothing an AI wrote is published or sent on its own.";
+  + `(and wait for your Approve when it is not). Its emails and texts to customers, and its replies in a Training thread, go out as soon as it posts them: `
+  + "nobody approves them first. A text still stops for a customer who opted out or has not agreed to texts, and an email for an address that unsubscribed. "
+  + "While Agent access is paused or off, nothing an AI wrote is published or sent. A price book change it proposes still waits for your Approve.";
 const GROUPS: Array<{ id: AgentScopeGroup; label: string }> = [
   { id: "messages", label: "Messages" },
   { id: "read", label: "Read" },
@@ -385,7 +381,7 @@ export function AgentKeysSection() {
   async function setWrites(k: AgentKeyView, on: boolean) {
     if (on && !window.confirm(writesConfirmText(k.name))) return;
     const done = on
-      ? "can now post in Messages (Team, group and crew posts publish at once while its Team posts box is ticked; a message to a customer waits for Approve unless an AI auto-send rule is on)"
+      ? "can now post in Messages (Team, group and crew posts publish at once while its Team posts box is ticked; emails and texts to customers go out as soon as it posts them)"
       : "can no longer post";
     if (await run(() => api.updateAgentKey(k.id, { writesEnabled: on }), `"${k.name}" ${done}.`)) await refresh();
   }

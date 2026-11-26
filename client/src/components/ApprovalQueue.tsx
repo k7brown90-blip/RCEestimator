@@ -20,6 +20,13 @@ import { ApprovalCard } from "./ApprovalCard";
 export function decisionBanner(result: HubDecision, card: ApprovalCardView): string {
   const who = card.recipient ?? "the customer";
   const send = result.send;
+  // A price change (Kyle 2026-11-24): approving it changes the price book, it sends nothing and posts nothing.
+  if (card.kind === "price_change") {
+    if (!send) return "Rejected. The price book was not changed.";
+    return send.status === "posted"
+      ? "The price book was changed."
+      : `The price book was not changed: ${send.error ?? "see the card"}. You can approve it again or reject it.`;
+  }
   if (!send) return "Rejected. Nothing was sent.";
   if (send.status === "sent") return `Sent to ${who}.`;
   if (send.status === "posted") return "Posted.";

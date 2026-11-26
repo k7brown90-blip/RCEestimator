@@ -86,6 +86,7 @@ import {
   computePricing,
   loadPricingContext,
   planAtomicUpdate,
+  type AtomicPatch,
 } from "./priceBookCatalog";
 import type { MarkupTiers } from "./priceBookPricing";
 
@@ -155,6 +156,7 @@ export interface AssemblyPricingSnapshot {
   companyCost: number | null;
   costComplete: boolean;
   markupTier: string;
+  companyCostWithTax: number | null;
   companyPrice: number | null;
   sellNormal: number | null;
   sellDifficult: number | null;
@@ -168,6 +170,9 @@ interface AssemblySnapshotResult {
   parent: { itemId: string; description: string | null; companyCost: number | null };
   snapshot: AssemblyPricingSnapshot;
 }
+
+/** What a preview swaps in for a component without touching the database: its cost and/or its hours (a tier set to null is a blank one). */
+export type ComponentCandidate = { companyCost?: number | null } & Partial<Record<LaborTier, number | null>>;
 
 /**
  * The full rollup + book-pricing recompute for one assembly, optionally substituting a
@@ -185,9 +190,10 @@ interface AssemblySnapshotResult {
 async function computeAssemblySnapshot(
   prisma: PrismaClient,
   parentItemId: string,
-  componentOverrides: Map<string, number>,
+  componentOverrides: Map<string, ComponentCandidate>,
   tiers: MarkupTiers,
   rate: number,
+  taxRate: number,
 ): Promise<AssemblySnapshotResult | null> {
   const parent = await prisma.priceBookAtomic.findUnique({ where: { itemId: parentItemId } });
   if (!parent || !isAssemblyRowType(parent.rowType)) return null;
@@ -198,9 +204,9 @@ async function computeAssemblySnapshot(
   });
   const inputs: ComponentInput[] = componentRows.map((c) => ({ childItemId: c.childItemId, quantity: c.quantity }));
   const facts = await fetchFactsMap(prisma, componentRows.map((c) => c.childItemId));
-  for (const [itemId, companyCost] of componentOverrides) {
+  for (const [itemId, candidate] of componentOverrides) {
     const fact = facts.get(itemId);
-    if (fact) facts.set(itemId, { ...fact, companyCost });
+    if (fact) facts.set(itemId, { ...fact, ...candidate });
   }
 
   const rollup = computeComponentRollup(inputs, facts);
@@ -221,6 +227,7 @@ async function computeAssemblySnapshot(
     { rowType: ASSEMBLY_ROW_TYPE, companyCost: rollup.companyCost, ...laborFinal },
     tiers,
     rate,
+    taxRate, // tax goes on ONCE, to the rolled-up PRE-TAX component cost - never through a component's companyPrice or tax-in cost
   );
 
   return {
@@ -248,6 +255,9 @@ export interface AssemblyImpact {
   projectedSellDifficult: number | null;
   currentSellVeryDifficult: number | null;
   projectedSellVeryDifficult: number | null;
+  /** The assembly's own rolled-up hours per tier, now and after the change (an hours change moves these and the sell tiers, not the cost). */
+  currentHours: Record<LaborTier, number | null>;
+  projectedHours: Record<LaborTier, number | null>;
 }
 
 /**
@@ -259,7 +269,9 @@ export interface AssemblyImpact {
 export async function findAssemblyImpacts(
   prisma: PrismaClient,
   changedItemId: string,
-  candidateUnitCost: number,
+  candidateUnitCost: number | null,
+  /** A proposed change to the component's hours (agent price-change cards): the tiers it would hold. Tiers left out keep the stored value. */
+  candidateHours: Partial<Record<LaborTier, number | null>> = {},
 ): Promise<AssemblyImpact[]> {
   const memberships = await prisma.priceBookItemComponent.findMany({
     where: { childItemId: changedItemId },
@@ -268,17 +280,19 @@ export async function findAssemblyImpacts(
   const parentIds = [...new Set(memberships.map((m) => m.parentItemId))];
   if (parentIds.length === 0) return [];
 
-  const { tiers, rate } = await loadPricingContext(prisma);
+  const { tiers, rate, taxRate } = await loadPricingContext(prisma);
   const impacts: AssemblyImpact[] = [];
   for (const parentItemId of parentIds) {
-    const current = await computeAssemblySnapshot(prisma, parentItemId, new Map(), tiers, rate);
+    const current = await computeAssemblySnapshot(prisma, parentItemId, new Map(), tiers, rate, taxRate);
     if (!current) continue;
+    const candidate: ComponentCandidate = { ...candidateHours, ...(candidateUnitCost !== null ? { companyCost: candidateUnitCost } : {}) };
     const projected = await computeAssemblySnapshot(
       prisma,
       parentItemId,
-      new Map([[changedItemId, candidateUnitCost]]),
+      new Map([[changedItemId, candidate]]),
       tiers,
       rate,
+      taxRate,
     );
     if (!projected) continue;
 
@@ -299,6 +313,8 @@ export async function findAssemblyImpacts(
       projectedSellDifficult: projected.snapshot.sellDifficult,
       currentSellVeryDifficult: current.snapshot.sellVeryDifficult,
       projectedSellVeryDifficult: projected.snapshot.sellVeryDifficult,
+      currentHours: { laborNormal: current.snapshot.laborNormal, laborDifficult: current.snapshot.laborDifficult, laborVeryDifficult: current.snapshot.laborVeryDifficult },
+      projectedHours: { laborNormal: projected.snapshot.laborNormal, laborDifficult: projected.snapshot.laborDifficult, laborVeryDifficult: projected.snapshot.laborVeryDifficult },
     });
   }
   return impacts;
@@ -472,6 +488,108 @@ export type AcceptProposalResult =
   | { ok: false; reason: string };
 
 /**
+ * THE CASCADE. Every assembly containing `changedItemId` as a component has its stored companyCost, hours and sell* recomputed via
+ * computeAssemblySnapshot (the SAME function findAssemblyImpacts uses for the preview), read live from the transaction so it reflects
+ * the component write just made. The caller holds the transaction: the component's own update and this cascade commit or roll back
+ * together. Shared by acceptPriceProposalLine (a cost from the monthly observations) and applyApprovedPriceChange (an agent's
+ * price-change card, approved).
+ */
+export async function cascadeToAssemblies(
+  txClient: PrismaClient, changedItemId: string, editedBy: string, note: string,
+): Promise<CascadedAssembly[]> {
+  const cascaded: CascadedAssembly[] = [];
+  const memberships = await txClient.priceBookItemComponent.findMany({
+    where: { childItemId: changedItemId },
+    select: { parentItemId: true },
+  });
+  const parentIds = [...new Set(memberships.map((m) => m.parentItemId))];
+  if (parentIds.length === 0) return cascaded;
+  const { tiers, rate, taxRate } = await loadPricingContext(txClient);
+  for (const parentItemId of parentIds) {
+    const result = await computeAssemblySnapshot(txClient, parentItemId, new Map(), tiers, rate, taxRate);
+    if (!result) continue;
+    const priorAssemblyCost = result.parent.companyCost;
+    const snap = result.snapshot;
+
+    await txClient.priceBookAtomic.update({
+      where: { itemId: parentItemId },
+      data: {
+        companyCost: snap.companyCost,
+        markupTier: snap.markupTier,
+        companyCostWithTax: snap.companyCostWithTax,
+        companyPrice: snap.companyPrice,
+        sellNormal: snap.sellNormal,
+        sellDifficult: snap.sellDifficult,
+        sellVeryDifficult: snap.sellVeryDifficult,
+        laborNormal: snap.laborNormal,
+        laborDifficult: snap.laborDifficult,
+        laborVeryDifficult: snap.laborVeryDifficult,
+      },
+    });
+    await txClient.priceBookEdit.create({
+      data: {
+        itemId: parentItemId,
+        field: "companyCost",
+        oldValue: priorAssemblyCost === null ? null : String(priorAssemblyCost),
+        newValue: snap.companyCost === null ? null : String(snap.companyCost),
+        editedBy,
+        note,
+      },
+    });
+
+    cascaded.push({
+      assemblyItemId: parentItemId,
+      assemblyDescription: result.parent.description,
+      priorCompanyCost: priorAssemblyCost,
+      companyCost: snap.companyCost,
+      companyPrice: snap.companyPrice,
+      sellNormal: snap.sellNormal,
+      sellDifficult: snap.sellDifficult,
+      sellVeryDifficult: snap.sellVeryDifficult,
+    });
+  }
+  return cascaded;
+}
+
+export type ApplyPriceChangeResult =
+  | {
+      ok: true;
+      itemId: string;
+      /** The fields that really moved (the patch minus anything already holding that value), with what they were and are. */
+      changed: Array<{ field: string; oldValue: string | null; newValue: string | null }>;
+      cascadedAssemblies: CascadedAssembly[];
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Apply an APPROVED price, hours or name change to one existing item (an agent's price-change card, Kyle 2026-11-24: "Nothing changes
+ * until Kyle or Michael approves it in the UI"): the item's own update through planAtomicUpdate / applyAtomicUpdatePlan (the book's math,
+ * every guard, one PriceBookEdit row per field) and the assembly cascade, in ONE transaction. `editedBy` names the agent key that proposed it
+ * (the edit rows' before/after belong to it); `note` says who approved. A change already holding the proposed values is a no-op.
+ */
+export async function applyApprovedPriceChange(
+  prisma: PrismaClient, itemId: string, patch: AtomicPatch, editedBy: string, note: string,
+): Promise<ApplyPriceChangeResult> {
+  return prisma.$transaction(async (tx) => {
+    const txClient = tx as unknown as PrismaClient;
+    const live = await tx.priceBookAtomic.findUnique({ where: { itemId }, select: { retiredAt: true } });
+    if (!live) return { ok: false as const, reason: `Item ${itemId} not found.` };
+    if (live.retiredAt) return { ok: false as const, reason: `${itemId} has been retired, so its price cannot be changed.` };
+
+    const planResult = await planAtomicUpdate(txClient, itemId, patch);
+    if (!planResult.ok) return { ok: false as const, reason: planResult.reason };
+    if (planResult.noop) return { ok: true as const, itemId, changed: [], cascadedAssemblies: [] };
+
+    await applyAtomicUpdatePlan(txClient, itemId, planResult.plan, editedBy);
+    await tx.priceBookEdit.create({
+      data: { itemId, field: "priceChangeApproved", oldValue: null, newValue: planResult.plan.audits.map((a) => a.field).join(", "), editedBy, note },
+    });
+    const cascadedAssemblies = await cascadeToAssemblies(txClient, itemId, editedBy, `Cascaded: component ${itemId} changed (${note}).`);
+    return { ok: true as const, itemId, changed: planResult.plan.audits, cascadedAssemblies };
+  });
+}
+
+/**
  * Recomputes the SAME evidence-gated candidate a proposal line would show — never trusts a
  * client-supplied number — and only then writes the item's `companyCost` (+ the book's
  * `companyPrice`/`sell*` recompute) through `updateAtomic`'s guarded path, and cascades that same
@@ -550,60 +668,11 @@ export async function acceptPriceProposalLine(
         },
       });
 
-      // THE CASCADE — same transaction as the component's own update above. Every assembly
-      // containing this item as a component has its stored companyCost/sell* recomputed via
-      // computeAssemblySnapshot (the SAME function findAssemblyImpacts uses for the preview), read
-      // live from `tx` so it reflects the companyCost write just made.
-      const memberships = await tx.priceBookItemComponent.findMany({
-        where: { childItemId: input.itemId },
-        select: { parentItemId: true },
-      });
-      const parentIds = [...new Set(memberships.map((m) => m.parentItemId))];
-      if (parentIds.length > 0) {
-        const { tiers, rate } = await loadPricingContext(txClient);
-        for (const parentItemId of parentIds) {
-          const result = await computeAssemblySnapshot(txClient, parentItemId, new Map(), tiers, rate);
-          if (!result) continue;
-          const priorAssemblyCost = result.parent.companyCost;
-          const snap = result.snapshot;
-
-          await tx.priceBookAtomic.update({
-            where: { itemId: parentItemId },
-            data: {
-              companyCost: snap.companyCost,
-              markupTier: snap.markupTier,
-              companyPrice: snap.companyPrice,
-              sellNormal: snap.sellNormal,
-              sellDifficult: snap.sellDifficult,
-              sellVeryDifficult: snap.sellVeryDifficult,
-              laborNormal: snap.laborNormal,
-              laborDifficult: snap.laborDifficult,
-              laborVeryDifficult: snap.laborVeryDifficult,
-            },
-          });
-          await tx.priceBookEdit.create({
-            data: {
-              itemId: parentItemId,
-              field: "companyCost",
-              oldValue: priorAssemblyCost === null ? null : String(priorAssemblyCost),
-              newValue: snap.companyCost === null ? null : String(snap.companyCost),
-              editedBy,
-              note: `Cascaded: component ${input.itemId}'s accepted proposal price changed this assembly's rollup.`,
-            },
-          });
-
-          cascadedAssemblies.push({
-            assemblyItemId: parentItemId,
-            assemblyDescription: result.parent.description,
-            priorCompanyCost: priorAssemblyCost,
-            companyCost: snap.companyCost,
-            companyPrice: snap.companyPrice,
-            sellNormal: snap.sellNormal,
-            sellDifficult: snap.sellDifficult,
-            sellVeryDifficult: snap.sellVeryDifficult,
-          });
-        }
-      }
+      // THE CASCADE — same transaction as the component's own update above (cascadeToAssemblies, above this function).
+      cascadedAssemblies.push(...(await cascadeToAssemblies(
+        txClient, input.itemId, editedBy,
+        `Cascaded: component ${input.itemId}'s accepted proposal price changed this assembly's rollup.`,
+      )));
     }
 
     return {

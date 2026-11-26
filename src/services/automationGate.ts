@@ -59,8 +59,10 @@ export type CustomerSendWorkflow =
   /** Gentle unpaid-invoice reminder emails, weekly, three max (Kyle, 2026-09-02). */
   | "invoiceReminders"
   /**
-   * An AI draft in a category Kyle switched ON in Settings -> "AI auto-send rules" goes out without a
-   * person pressing Approve (work order agent-team, BA7/BA8). Needs this gate AND the category switch.
+   * An AI agent's customer email or text goes out the moment the agent posts it, with no person pressing Approve (Kyle 2026-11-24, agents act
+   * without check-ins; services/hubAgentSend.ts). This is the server-side leg of that send: default-deny like every other workflow here
+   * (manual-first ruling 2026-08-11), so it needs this variable or the master. The variable name is the one the old "AI auto-send rules"
+   * used, kept so any Railway setting carries over. A text also needs the Twilio leg hubSms below.
    */
   | "hubAutoSend";
 
@@ -83,7 +85,7 @@ const WORKFLOW_LABEL: Record<CustomerSendWorkflow, string> = {
   inboundAutoReply: "auto-replies to customer inbound texts",
   reviewRequests: "Google review request email on job completion",
   invoiceReminders: "weekly unpaid-invoice reminder emails (3 max)",
-  hubAutoSend: "AI drafts sent without an Approve press (Settings -> AI auto-send rules)",
+  hubAutoSend: "AI agent customer emails and texts sent when the agent posts them, with no Approve press",
 };
 
 /**

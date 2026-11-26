@@ -7,7 +7,6 @@
 import { describe, expect, it } from "vitest";
 import { composeSms, formatHeaderWhen, SMS_FOOTER } from "../shared/sms/compose";
 import { MESSAGE_CATEGORY_LIST, registryProblems } from "../shared/hub/messageCategories";
-import { AUTO_SEND_CATEGORIES } from "../shared/hub/autoSendCategories";
 import { cardHeaderLine } from "../shared/hub/cards";
 
 // Mon Nov 23 2026, 8:00-10:00 AM Central (CST, UTC-6).
@@ -101,9 +100,11 @@ describe("the registry and the card header", () => {
     expect(cardHeaderLine({ channel: "sms", messageClass: null, purposeKey: null, category: null })).toBe("Text · No class set");
   });
 
-  it("autoSendCategories is a filtered view of the registry, not a second list", () => {
-    const eligible = MESSAGE_CATEGORY_LIST.filter((c) => c.autoSendEligible).map((c) => c.key);
-    expect(AUTO_SEND_CATEGORIES.map((c) => c.key)).toEqual(eligible);
-    expect(eligible.length).toBeGreaterThan(0);
+  // Kyle 2026-11-24 (agents act without check-ins): the "Auto-send rules" and shared/hub/autoSendCategories.ts (a filtered view of this registry)
+  // are removed, so the test that pinned that view went with them. The registry no longer carries any auto-send field.
+  it("the send-type registry carries no auto-send fields any more", () => {
+    for (const c of MESSAGE_CATEGORY_LIST) {
+      expect(Object.keys(c).sort(), c.key).toEqual(["customerFacing", "footer", "key", "label", "messageClass", "purposeKey"]);
+    }
   });
 });

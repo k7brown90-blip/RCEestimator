@@ -273,11 +273,12 @@ describe("acceptPriceProposalLine — writes companyCost, recomputes sell*, and 
     // formula (priceBookCatalog.ts's computePricing) — not a raw write that would leave them
     // stale. Pinned against an independent computation, not merely "differs from before", so this
     // holds regardless of what PriceBookRateConfig happens to contain in the test database.
-    const { tiers, rate } = await loadPricingContext(prisma);
+    const { tiers, rate, taxRate } = await loadPricingContext(prisma); // Kyle 2026-11-24 "Tax in sell, all items": the expected side takes the same tax rate
     const expected = computePricing(
       { rowType: "MATERIAL + LABOR", companyCost: 7.5, laborNormal: 0.25, laborDifficult: 0.35, laborVeryDifficult: 0.5 },
       tiers,
       rate,
+      taxRate,
     );
     expect(row?.companyPrice).toBe(expected.companyPrice);
     expect(row?.sellNormal).toBe(expected.sellNormal);
@@ -367,11 +368,12 @@ describe("assembly blast radius — the cascade and its preview share one comput
     // Pinned against an independent computePricing call (both components carry laborNormal 0.25,
     // quantity 1 each → assembly laborNormal 0.5), not "differs from current" — correct either
     // way, regardless of what PriceBookRateConfig contains in the test database.
-    const { tiers, rate } = await loadPricingContext(prisma);
+    const { tiers, rate, taxRate } = await loadPricingContext(prisma); // Kyle 2026-11-24 "Tax in sell, all items": the expected side takes the same tax rate
     const expectedProjected = computePricing(
       { rowType: "ASSEMBLY", companyCost: 17, laborNormal: 0.5, laborDifficult: 0.7, laborVeryDifficult: 1 },
       tiers,
       rate,
+      taxRate,
     );
     expect(impact?.projectedSellNormal).toBe(expectedProjected.sellNormal);
     expect(impact?.projectedCompanyPrice).toBe(expectedProjected.companyPrice);
@@ -445,11 +447,12 @@ describe("assembly blast radius — the cascade and its preview share one comput
 
     // sell*/companyPrice are pinned against an independent computePricing call, not "differs from
     // before" — correct either way, regardless of what PriceBookRateConfig contains.
-    const { tiers, rate } = await loadPricingContext(prisma);
+    const { tiers, rate, taxRate } = await loadPricingContext(prisma); // Kyle 2026-11-24 "Tax in sell, all items": the expected side takes the same tax rate
     const expectedAssembly = computePricing(
       { rowType: "ASSEMBLY", companyCost: 45, laborNormal: 0.75, laborDifficult: 1.05, laborVeryDifficult: 1.5 },
       tiers,
       rate,
+      taxRate,
     );
     expect(after?.companyPrice).toBe(expectedAssembly.companyPrice);
     expect(after?.sellNormal).toBe(expectedAssembly.sellNormal);

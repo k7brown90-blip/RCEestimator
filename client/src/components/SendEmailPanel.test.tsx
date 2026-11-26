@@ -160,31 +160,32 @@ describe("SendEmailPanel inside a record's Conversation", () => {
 });
 
 /*
- * THE AI ADMIN'S MESSAGE IS A DRAFT (work order agent-team, U4b, default D2): signed in as the AI admin, the free-form
- * Message button reads "Send for Kyle's approval to jane@…" and the server leaves a draft instead of sending; Kyle's own
- * session and every other office login keep "Send". The structured kinds (invoice, estimate, review...) are not touched.
+ * THE AI ADMIN'S MESSAGE IS SENT (Kyle 2026-11-24, "requiring them to check-in on everything defeats the purpose"; this was a draft that waited
+ * for Kyle's approval, work order agent-team U4b): signed in as the AI admin, the free-form Message button reads "Send to jane@…" (the address
+ * masked) and the server sends it; Kyle's own session and every other office login keep "Send". The structured kinds are not touched.
  */
 describe("SendEmailPanel as the AI admin", () => {
-  it("names who it would go to, masked, and who approves it; the answer says it was left for approval", async () => {
+  it("names who it goes to, masked; the answer says it was sent, not left for approval", async () => {
     vi.spyOn(api, "session").mockResolvedValue({ kind: "ai-admin", name: "grok-admin", role: "ai-admin", isKyle: false, powers: [] });
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
     const send = vi.spyOn(api, "sendRecordEmail").mockResolvedValue({
-      sent: false, drafted: true, messageId: "m-1", to: "jane@example.com", cc: ["pm@example.com"], suppressed: false,
+      sent: true, drafted: false, messageId: "m-1", to: "jane@example.com", cc: ["pm@example.com"], suppressed: false,
     });
     renderWithProviders(<SendEmailPanel target="lead" id="lead-1" primaryEmail="jane@example.com" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Send email" }));
     fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Checking in" } });
     fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Following up." } });
-    const button = await screen.findByRole("button", { name: "Send for Kyle's approval to jane@…" });
+    const button = await screen.findByRole("button", { name: "Send to jane@…" });
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approval/ })).not.toBeInTheDocument();
     fireEvent.click(button);
 
     await waitFor(() => expect(send).toHaveBeenCalledWith({
       target: "lead", id: "lead-1", to: "jane@example.com", subject: "Checking in", body: "Following up.",
     }));
-    expect(await screen.findByText(/Left for Kyle's approval\. It goes to jane@example\.com, cc pm@example\.com once he approves it, from Messages → Waiting for approval\./)).toBeInTheDocument();
-    expect(screen.queryByText(/^Sent to/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/^Sent to jane@example.com, cc pm@example.com./)).toBeInTheDocument();
+    expect(screen.queryByText(/approval/i)).not.toBeInTheDocument();
   });
 
   it("Kyle's own session keeps the plain Send button", async () => {
@@ -196,7 +197,7 @@ describe("SendEmailPanel as the AI admin", () => {
     expect(screen.queryByRole("button", { name: /approval/ })).not.toBeInTheDocument();
   });
 
-  it("a structured kind (the review request) is not drafted: its button keeps its own words even for the AI admin", async () => {
+  it("a structured kind (the review request) is not masked: its button keeps its own words even for the AI admin", async () => {
     vi.spyOn(api, "session").mockResolvedValue({ kind: "ai-admin", name: "grok-admin", role: "ai-admin", isKyle: false, powers: [] });
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
     vi.spyOn(api, "accountContacts").mockResolvedValue([] as never);
@@ -210,6 +211,6 @@ describe("SendEmailPanel as the AI admin", () => {
     fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
     expect(await screen.findByRole("button", { name: "Send review request to jane@example.com" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "Message" }));
-    expect(await screen.findByRole("button", { name: "Send for Kyle's approval to jane@…" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Send to jane@…" })).toBeInTheDocument();
   });
 });

@@ -44,6 +44,8 @@ import {
   HUB_THREAD_STATUSES, type HubChannel, type HubMessageStatus,
 } from "../../shared/hub/model";
 import { hubKindsFor, isHubThreadKind, type HubThreadKind } from "../../shared/agentScopes";
+import type { CrmPower } from "../../shared/crmPowers";
+import { KIND_APPROVER_POWERS } from "../../shared/hub/cards";
 import { GROUP_CLOSED_POST_REASON } from "../../shared/hub/groups";
 import { parseMentions } from "../../shared/hub/mentions";
 
@@ -193,7 +195,32 @@ async function linkedLoginFor(technicianId: string, db: Db): Promise<{ reader: H
  */
 export async function approverReaderForTechnician(technicianId: string, db: Db = defaultPrisma): Promise<HubReader | null> {
   const found = await linkedLoginFor(technicianId, db);
-  return found?.canApprove ? found.reader : null;
+  if (!found) return null;
+  if (found.canApprove) return found.reader;
+  // A login holding only a card kind's own power (price_book_edit decides price changes, Kyle 2026-11-25) is an approver for THAT kind alone:
+  // the services decide per card, the list is cut to its kinds (services/hubCards.ts).
+  return (await heldKindPowers(found.reader, db)).length > 0 ? found.reader : null;
+}
+
+/** The powers among shared/hub/cards.ts KIND_APPROVER_POWERS this reader holds (what lets a login without approve_drafts decide one kind of card). */
+export async function heldKindPowers(reader: HubReader, db: Db = defaultPrisma): Promise<CrmPower[]> {
+  const held: CrmPower[] = [];
+  for (const power of new Set(Object.values(KIND_APPROVER_POWERS))) {
+    if (power && (await readerHoldsPower(reader, power, db))) held.push(power);
+  }
+  return held;
+}
+
+/**
+ * Whether this reader holds a CRM power: the ONE test for a reader (the middleware's hasKylePower is its request twin). Kyle's PIN session
+ * holds every power; a "user" reader (a CRM login, which is also what an approving technician's phone acts as) holds it when the login is on
+ * and is Kyle's principal login or has the power ticked; the AI admin, an agent key and a plain technician never do.
+ */
+export async function readerHoldsPower(reader: HubReader, power: CrmPower, db: Db = defaultPrisma): Promise<boolean> {
+  if (reader.kind === "owner") return true;
+  if (reader.kind !== "user" || !reader.key.startsWith("user:")) return false;
+  const login = await db.crmLogin.findUnique({ where: { id: reader.key.slice("user:".length) }, select: { enabled: true, isPrincipal: true, powers: true } });
+  return Boolean(login && login.enabled && (login.isPrincipal || login.powers.includes(power)));
 }
 
 /**
@@ -731,12 +758,12 @@ export interface PostMessageInput {
    */
   attachmentIds?: readonly string[];
   tags?: readonly string[];
-  /** An agent may post a draft; anything else it posts waits for approval unless an auto-send rule approves it. Ignored for people. */
+  /** An agent may keep a post as a draft ("draft"); anything else it posts is published (a Team, group or crew post by its key's own box). Ignored for people. */
   status?: string;
   /**
    * The send type of an AGENT's post (shared/hub/messageCategories.ts): `team_internal` in a Team, group or job (crew) conversation,
    * `training_reply` in a Training one. Left out, an agent's post takes that default; any other type is refused (agentPostCategory).
-   * It is what the auto-send rule looks at. A person's post carries none.
+   * It is what the key's Team-post box looks at. A person's post carries none.
    */
   category?: string | null;
   /** The record this message is about, when the thread is not already that record (a tag inside a customer thread). */
@@ -775,7 +802,7 @@ export interface PostMessageResult {
   message: HubMessage;
   /** True when this id had already made a message: nothing new was written and nothing was announced. */
   replayed: boolean;
-  /** W2: for an AI post that stayed waiting for approval after it was offered to the auto-send step, why, in plain words. Null otherwise. */
+  /** W2: for an AI post that stayed waiting for approval after it was offered to its key's Team-post box, why, in plain words. Null otherwise. */
   pendingReason?: string | null;
 }
 
@@ -784,11 +811,10 @@ export interface PostMessageResult {
  * send, and a send is its own function (U4) so every customer message passes the same checks.
  *
  *   - People (owner, a login, the AI admin, a technician): the message is `posted` at once.
- *   - An agent key: `pending_approval`, or `draft` when it asks for draft. The agent never posts or approves its own
- *     message (team answer 3): a pending_approval post is then OFFERED to the auto-send step (offerToAutoSend, services/hubAutoSend.ts),
- *     which may approve and post it - a Team, group or crew post (team_internal) by its author KEY's "Team posts publish immediately"
- *     box (W2), a Training reply (training_reply) by Kyle's owner rule; a requested draft is never offered. The one exception is Claude Code
- *     in a Dev thread, which is `posted` as an internal message whatever the body says.
+ *   - An agent key (Kyle 2026-11-24, no check-ins): a Training post is `posted` at once, as is Claude Code's post in a Dev thread; a Team,
+ *     group or crew post is written `pending_approval` and then OFFERED to its author KEY's own "Team posts publish immediately" box
+ *     (offerToKeyPublish, services/hubAgentSend.ts publishTeamPost), which publishes it while the box (and Agent access, and the key's writes)
+ *     allow it and otherwise leaves it waiting for a person; a requested `draft` is never published.
  */
 export async function postMessage(reader: HubReader, input: PostMessageInput, db: PrismaClient = defaultPrisma): Promise<HubMessage> {
   return (await postMessageResult(reader, input, db)).message;
@@ -852,8 +878,7 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
 
   let status: HubMessageStatus = "posted";
   let category: string | null = null;
-  // The agent asked for a draft: a Training thread turns it into pending_approval (amendment 16b), but it is still a message
-  // the agent said is not ready, so it is NEVER offered to the auto-send rule below (only an Approve posts it).
+  // The agent asked for a draft: it is a message the agent said is not ready, so it is NEVER published below (only a person moves it on).
   const askedDraft = reader.kind === "agent" && input.status === "draft";
   if (reader.kind === "agent") {
     // A draft to a CUSTOMER is a send, with a channel and a send type; it comes through the draft door
@@ -864,19 +889,18 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
     category = sort.category;
     if (thread.kind === "dev" && reader.agentRole === "claude_code") {
       status = "posted";
+    } else if (input.status !== undefined && input.status !== "pending_approval" && input.status !== "draft") {
+      throw new HubError("An agent can only post or leave a draft.", 403);
     } else if (thread.kind === "training") {
-      // Amendment 16b: every agent post in a training thread waits for approval - a "draft" is not an option there.
-      // (Anything other than draft or pending_approval is still refused below the same way.)
-      if (input.status !== undefined && input.status !== "pending_approval" && input.status !== "draft") {
-        throw new HubError("An agent can only leave a draft or a message waiting for approval.", 403);
-      }
-      status = "pending_approval";
-    } else if (input.status === undefined || input.status === "pending_approval") {
-      status = "pending_approval";
+      // Kyle 2026-11-24 (no check-ins): an agent's post in a Training thread is published when it is posted. (Amendment 16b, which held
+      // every one for an Approve and made "draft" not an option there, is gone: a draft is still not an option here, so a post asked as a draft
+      // or as "pending_approval", the old way to ask, is published like any other.)
+      status = "posted";
     } else if (input.status === "draft") {
       status = "draft";
     } else {
-      throw new HubError("An agent can only leave a draft or a message waiting for approval.", 403);
+      // A Team, group or crew post: written waiting, then published by the author key's OWN box (offerToKeyPublish) or left for a person.
+      status = "pending_approval";
     }
   }
 
@@ -898,7 +922,7 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
       photoIds,
       category,
       // An agent's in-app post is a team reply, whoever decides it: the card registry derives the same kind (kindOfMessage), so the
-      // approval.decided event says "team_reply" whether the rule or a person approved it (hubAutoSend falls back to "customer_message" on null).
+      // approval.decided event says "team_reply" whether the key's box or a person approved it (the event falls back to "customer_message" on null).
       actionKind: reader.kind === "agent" && thread.kind !== "dev" ? "team_reply" : null,
       tags: input.tags ?? [],
       visitId: input.visitId ?? null,
@@ -929,10 +953,10 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
     }
     throw err;
   }
-  // An AI's post that is waiting for approval is offered to the auto-send rule AFTER the write committed (the row is
+  // An AI's team post that is waiting for approval is offered to its author key's own box AFTER the write committed (the row is
   // already in the database: this function never runs inside the caller's transaction) and BEFORE the one fan-out.
   if (!askedDraft && message.status === "pending_approval" && (message.authorType === "ai_agent" || message.authorType === "claude")) {
-    const offered = await offerToAutoSend(message, thread, input.context ?? null, db);
+    const offered = await offerToKeyPublish(message, thread, input.context ?? null, db);
     return { message: offered.message, replayed: false, pendingReason: offered.pendingReason };
   }
   fanOutMessage(message, thread, input.context ?? null);
@@ -940,25 +964,25 @@ export async function postMessageResult(reader: HubReader, input: PostMessageInp
 }
 
 /**
- * Offer a fresh AI post to the existing auto-send rule (services/hubAutoSend.ts maybeAutoApprove: unchanged), then announce it ONCE
- * with the row as it now stands. A post the rule sent is `posted` and hubSend already announced it (settleSent is a fan-out
- * call site too), so announcing it again would push the team twice; one that stays waiting is announced here as waiting for
- * Approve; one that failed is announced as it is. The rule can never lose the post: any error leaves it waiting for Approve.
- * hubAutoSend is imported on demand because it imports this file.
+ * Offer a fresh AI team post to its author key's own "Team posts publish immediately" box (services/hubAgentSend.ts publishTeamPost), then
+ * announce it ONCE with the row as it now stands. A post the key published is `posted` and hubSend already announced it (settleSent is a
+ * fan-out call site too), so announcing it again would push the team twice; one that stays waiting is announced here as waiting for
+ * Approve; one that failed is announced as it is. The step can never lose the post: any error leaves it waiting for Approve.
+ * hubAgentSend is imported on demand because it imports this file.
  */
-async function offerToAutoSend(
+async function offerToKeyPublish(
   message: HubMessage, thread: HubThread, context: { kind: string; id: string } | null, db: PrismaClient,
 ): Promise<{ message: HubMessage; pendingReason: string | null }> {
   let fresh: HubMessage = message;
   // W2: why the post is still waiting, kept so the door can tell the agent in plain words (it used to be thrown away).
   let pendingReason: string | null = null;
   try {
-    const { maybeAutoApprove } = await import("./hubAutoSend");
-    const offered = await maybeAutoApprove(message.id, db);
-    if (!offered.autoApproved) pendingReason = offered.why;
+    const { publishTeamPost } = await import("./hubAgentSend");
+    const offered = await publishTeamPost(message.id, db);
+    if (!offered.published) pendingReason = offered.why;
   } catch (err) {
     pendingReason = "The step that publishes it failed, so it waits for a person to approve it.";
-    logSystemEvent("error", "hub", `The auto-send rule failed on message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
+    logSystemEvent("error", "hub", `Publishing a team post failed on message ${message.id}: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     fresh = (await db.hubMessage.findUnique({ where: { id: message.id } })) ?? message;
     if (fresh.status !== "posted" && fresh.status !== "sent") fanOutMessage(fresh, thread, context);

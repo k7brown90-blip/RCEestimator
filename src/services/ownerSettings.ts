@@ -13,10 +13,6 @@ import { prisma as defaultPrisma } from "../lib/prisma";
 import { logSystemEvent } from "./systemEvents";
 import { DEFAULT_QUIET_WINDOW, isValidQuietWindow, parseClock, type QuietWindow } from "../../shared/sms/quietHours";
 import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, isFanOutEventType, isHubEventType } from "../../shared/hub/events";
-import {
-  AUTO_SEND_CATEGORIES, DEFAULT_HUB_AUTO_SEND, isAutoSendCategory, type HubAutoSendStatus, type HubAutoSendValue,
-} from "../../shared/hub/autoSendCategories";
-import { customerSendsEnabled, workflowEnvVar } from "./automationGate";
 import { SMS_PURPOSES, isSmsPurposeKey, smsPurposeLabel, type SmsPurposeKey } from "../../shared/sms/purposes";
 import { WEBHOOK_HEADERS_MAX, webhookHeaderNameProblem, webhookHeaderNameShapeProblem, webhookHeaderValueProblem } from "../../shared/hub/webhookHeaders";
 import { PEPPER_UNSET_MESSAGE, encryptSecret, generateSigningSecret, maskSecret, settingSecretsAvailable } from "./settingSecrets";
@@ -291,43 +287,12 @@ export async function removeWebhookSigningSecret(id: WebhookTargetId, db: Prisma
   return had;
 }
 
-/**
- * Categories that WERE auto-send rules and are not any more. A stored value that still holds one (Kyle's saved row has
- * `team_internal: true`) is read with that key dropped, instead of failing the strict check below: a failed check makes the whole
- * setting read as the default (everything OFF), which would silently switch off the rules that are still his. W2 (Kyle 2026-11-23):
- * an AI's Team post is published by its key's own box, no longer by a rule here (shared/hub/messageCategories.ts team_internal).
+/*
+ * Kyle 2026-11-24 (agents act without check-ins): the owner setting `hubAutoSend` ("AI auto-send rules") is gone. An AI's customer
+ * message is sent when it is posted and a Training post is published, so nothing is left for a rule to decide. A saved row for it in
+ * CompanySetting (key `hubAutoSend`), if one exists, is left in place and nothing reads it; PUT /owner-settings/hubAutoSend now answers 400
+ * (unknown key) like any key that is not in the OWNER_SETTINGS table.
  */
-const RETIRED_AUTO_SEND_CATEGORIES: readonly string[] = ["team_internal"];
-
-function dropRetiredAutoSendCategories(value: unknown): unknown {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => !RETIRED_AUTO_SEND_CATEGORIES.includes(k)));
-}
-
-/**
- * Which AI message categories go out WITHOUT a person pressing Approve (work order agent-team, BA8).
- * Every category is OFF until Kyle turns it on in Settings -> "AI auto-send rules"; a missing row means
- * all OFF, so no seed is needed. The categories are the ones the send-type registry marks
- * autoSendEligible (shared/hub/autoSendCategories.ts is a filtered view of it), so a key that is not
- * eligible there is refused here. Only `categories` comes from the client: who changed it, and when, are
- * stamped by the server. A switch alone sends nothing: the hubAutoSend gate (Railway env) must be ON too
- * (services/hubAutoSend.ts). Kyle only.
- */
-export const hubAutoSendSchema = z
-  .object({
-    categories: z.preprocess(
-      dropRetiredAutoSendCategories,
-      z
-        .record(z.string(), z.boolean())
-        .refine(
-          (c) => Object.keys(c).every(isAutoSendCategory),
-          `Unknown category. Categories that can be switched on: ${AUTO_SEND_CATEGORIES.map((c) => c.key).join(", ") || "none"}`,
-        ),
-    ),
-    changedAt: z.string().nullable().default(null),
-    changedBy: z.string().nullable().default(null),
-  })
-  .strict();
 
 /**
  * When the waiting-approval reminder may go out (work order agent-team, U8, team answer 8): the hours of
@@ -375,7 +340,7 @@ export const smsPurposeLabelsSchema = z
 
 export type SmsPurposeLabels = z.infer<typeof smsPurposeLabelsSchema>;
 
-export type OwnerSettingKey = "quietHours" | "agentAccess" | "agentWebhooks" | "hubAutoSend" | "hubNotify" | "smsPurposeLabels";
+export type OwnerSettingKey = "quietHours" | "agentAccess" | "agentWebhooks" | "hubNotify" | "smsPurposeLabels";
 
 /**
  * One entry per key. `guard` says who may read and write it through the route family: "kyle" is
@@ -417,28 +382,6 @@ export const OWNER_SETTINGS: Record<OwnerSettingKey, OwnerSettingDef> = {
         actor: actorName,
         targets: v.targets.map((t) => ({ id: t.id, set: t.url !== null, enabled: t.enabled, headers: t.headers.length, ownSecret: t.signingSecret !== null })),
         routes: v.routes,
-      });
-    },
-  },
-  hubAutoSend: {
-    schema: hubAutoSendSchema,
-    default: DEFAULT_HUB_AUTO_SEND as unknown,
-    guard: "kyle",
-    status: (): HubAutoSendStatus => ({ gateOn: customerSendsEnabled("hubAutoSend"), gateEnv: workflowEnvVar("hubAutoSend") }),
-    stamp: (body, actorName, now) => ({
-      categories: body !== null && typeof body === "object" ? (body as { categories?: unknown }).categories : undefined,
-      changedAt: now.toISOString(),
-      changedBy: actorName,
-    }),
-    // Turning an AI category on or off is a decision about what reaches customers: log who and what.
-    onSaved: (previous, next, actorName) => {
-      const was = (previous as HubAutoSendValue | null)?.categories ?? {};
-      const now = (next as HubAutoSendValue).categories;
-      const changed = Object.keys({ ...was, ...now }).filter((k) => (was[k] === true) !== (now[k] === true));
-      logSystemEvent("info", "hub", "AI auto-send rules changed", {
-        route: "PUT /owner-settings/hubAutoSend",
-        actor: actorName,
-        changed: changed.map((k) => ({ category: k, on: now[k] === true })),
       });
     },
   },

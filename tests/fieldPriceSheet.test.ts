@@ -226,6 +226,23 @@ describe("GET /health-record/quote-price-sheet — the engine's own one-unit fig
     expect((await sheet()).tripCharge).toBe(trip.numberValue ?? 0);
   });
 
+  it("is rebuilt when only the Settings -> Purchasing sales tax is saved - the engine reads the rate live (Kyle 2026-11-24, 'Tax in sell, all items')", async () => {
+    resetPriceSheetMemo();
+    await sheet();
+    const before = priceSheetBuildCount();
+    await sheet();
+    expect(priceSheetBuildCount(), "nothing changed: no second build").toBe(before);
+    const prior = await prisma.companySetting.findUnique({ where: { key: "purchasing" } });
+    try {
+      await prisma.companySetting.upsert({ where: { key: "purchasing" }, create: { key: "purchasing", valueJson: JSON.stringify({ salesTaxRate: 0.0975 }) }, update: { valueJson: JSON.stringify({ salesTaxRate: 0.0975, touched: Date.now() }) } });
+      await sheet();
+      expect(priceSheetBuildCount(), "a tax-rate save with no book row moving still rebuilds the sheet").toBe(before + 1);
+    } finally {
+      if (prior) await prisma.companySetting.update({ where: { key: "purchasing" }, data: { valueJson: prior.valueJson } });
+      else await prisma.companySetting.deleteMany({ where: { key: "purchasing" } });
+    }
+  });
+
   it("answers { unchanged: true } for the version the phone already holds, and a fresh sheet for any other", async () => {
     const s = await sheet();
     const same = await auth(request(app).get("/health-record/quote-price-sheet").query({ version: s.version }));

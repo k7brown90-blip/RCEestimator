@@ -21,7 +21,7 @@ import { buildTimeline } from "../src/services/hubTimeline";
 import { threadDetail } from "../src/services/hubInbox";
 import { approvalCardFor, listApprovalCards } from "../src/services/hubCards";
 import { approveMessage } from "../src/services/hubApproval";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { ensureThreadFor, isFirstTextTo, type HubReader } from "../src/services/hub";
 import { SMS_FOOTER } from "../shared/sms/compose";
 
@@ -109,7 +109,7 @@ describe("the first-text footer rule counts only texts that reached a customer",
     const test = await account({ isTestAccount: true });
     const thread = await ensureThreadFor({ customerId: test.customer.id });
     // An agent drafts a text in the TEST account's thread, addressed to the real customer's number.
-    const { message } = await createDraftMessage(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works.", toPhone: real.to });
+    const { message } = await waitingDraft(AI, { threadId: thread.id, channel: "sms", category: "confirmation_request", body: "Tuesday works.", toPhone: real.to });
     const done = await approveMessage(OWNER, message.id);
     expect(done.send).toMatchObject({ status: "sent" });
     expect(twilioCalls()).toHaveLength(0); // a rehearsal: nothing texted

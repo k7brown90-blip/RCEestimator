@@ -146,6 +146,31 @@ describe("reading the conversation", () => {
     expect(screen.getByText(sendBlockText("opted_out"))).toBeInTheDocument();
   });
 
+  // Kyle 2026-11-24 (agents act without check-ins): an AI's email or text to the customer is sent when it is posted, so the conversation says who sent it
+  // and that nobody approved it - never "Review draft", never "Waiting for approval".
+  it("an email an AI sent on its own says 'Sent by <name> (AI), no approval step', with the Sent chip and no Review draft button", async () => {
+    account([messageEntry({ id: "m-ai", status: "sent", channel: "email", direction: "outbound", authorType: "ai_agent", authorDisplay: "RCE Admin", subject: "Tuesday", body: "We can be there Tuesday.", sentDirectly: true })]);
+    expect(await screen.findByTestId("ai-sent-line")).toHaveTextContent("Sent by RCE Admin (AI), no approval step");
+    expect(screen.getByText("Sent")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review draft" })).toBeNull();
+    expect(screen.queryByText(/waiting for approval/i)).toBeNull();
+  });
+
+  // An AI email a person approved (everything sent before agents sent directly, and an old card approved since) is NOT "no approval step": the
+  // server says sentDirectly false and the screen must not contradict the Message audit log.
+  it("an AI email a person approved does not say 'no approval step'", async () => {
+    account([messageEntry({ id: "m-ap", status: "sent", channel: "email", direction: "outbound", authorType: "ai_agent", authorDisplay: "RCE Admin", subject: "Tuesday", body: "We can be there Tuesday.", sentDirectly: false })]);
+    expect(await screen.findByText("Sent")).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-sent-line")).toBeNull();
+    expect(screen.queryByText(/no approval step/i)).toBeNull();
+  });
+
+  it("an AI message that did NOT go (blocked) says so with the reason, not 'sent by'", async () => {
+    account([messageEntry({ id: "m-ai-b", status: "blocked", channel: "sms", direction: "outbound", authorType: "ai_agent", authorDisplay: "RCE Admin", body: "Tuesday works.", error: "texting_off", messageClass: "transactional" })]);
+    expect(await screen.findByText(sendBlockText("texting_off"))).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-sent-line")).toBeNull();
+  });
+
   it("a blocked line says why in words (no consent is 'never agreed', not 'opted out')", async () => {
     account([messageEntry({ id: "m-c", status: "blocked", channel: "sms", direction: "outbound", authorType: "system", authorDisplay: "System", body: "Job scheduled", error: "no_sms_consent", toMasked: "(615) ***-0101", messageClass: "transactional" })]);
     expect(await screen.findByText(sendBlockText("no_sms_consent"))).toBeInTheDocument();

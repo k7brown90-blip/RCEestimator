@@ -160,7 +160,7 @@ export async function getIssuedQuoteMoney(prisma: PrismaClient, estimateId: stri
       financingPlansJson: true,
       warrantyJson: true,
       options: { select: { option: true, subtotal: true }, orderBy: { option: "asc" } },
-      lines: { select: { option: true, materialCost: true, materialSell: true, inMaterialCap: true } },
+      lines: { select: { option: true, materialCost: true, materialCostWithTax: true, materialSell: true, inMaterialCap: true } },
     },
   });
   if (!est) return null;
@@ -209,7 +209,7 @@ export async function quotedRangesForIssued(
   if (gated.length === 0) return out;
   const lines = await prisma.issuedEstimateLine.findMany({
     where: { estimateId: { in: gated.map((r) => r.id) } },
-    select: { estimateId: true, option: true, materialCost: true, materialSell: true, inMaterialCap: true },
+    select: { estimateId: true, option: true, materialCost: true, materialCostWithTax: true, materialSell: true, inMaterialCap: true },
   });
   // Grouped once, so the work is one pass over the lines, not rows x lines.
   const linesById = new Map<string, typeof lines>();

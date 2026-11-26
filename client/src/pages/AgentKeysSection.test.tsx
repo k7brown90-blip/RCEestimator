@@ -133,12 +133,13 @@ describe("Allow writes (W1: agent writes switched on)", () => {
     const confirm = vi.spyOn(window, "confirm");
     confirm.mockReturnValueOnce(false);
     fireEvent.click(screen.getByLabelText("Allow writes for Admin Agent"));
-    // W2: team posts publish at once when that key's box is ticked; a message to a customer waits for Approve unless a customer auto-send rule is on.
+    // W2: team posts publish at once when that key's box is ticked. Changed deliberately (Kyle 2026-11-24, "requiring them to check-in on everything
+    // defeats the purpose of the chat"): a customer email or text and a Training reply go out as soon as the key posts them - the old text said they waited.
     expect(confirm).toHaveBeenCalledWith(
       'Let "Admin Agent" post in Messages? Its posts in the Team, group and crew chats are published at once when "Team posts publish immediately" is ticked for it '
-      + '(and wait for your Approve when it is not). A message to a customer waits for your Approve unless one of these rules is on under AI auto-send rules: '
-      + '"Appointment reminder" or "First reply to a new request". Its replies in a Training thread wait unless "Reply in a Training thread" is on. '
-      + 'While Agent access is paused or off, nothing an AI wrote is published or sent on its own.',
+      + '(and wait for your Approve when it is not). Its emails and texts to customers, and its replies in a Training thread, go out as soon as it posts them: '
+      + 'nobody approves them first. A text still stops for a customer who opted out or has not agreed to texts, and an email for an address that unsubscribed. '
+      + 'While Agent access is paused or off, nothing an AI wrote is published or sent. A price book change it proposes still waits for your Approve.',
     );
     expect(update).not.toHaveBeenCalled();
     confirm.mockReturnValueOnce(true);
@@ -199,7 +200,7 @@ describe("W2: the Messages scopes, Team posts publish immediately, and Activity"
     expect(labels).toEqual(["New key scope team:read", "New key scope team:reply", "New key scope hub:read", "New key scope hub:draft"]);
     for (const [word, helper] of [
       ["Read team", "Read the Team, group and job crew chats"], ["Post team", "Post in the Team, group and job crew chats"],
-      ["Read customer", "Read customer conversations (and job crew chats) — not the Team or group chats"], ["Draft customer", "Draft customer messages for approval"],
+      ["Read customer", "Read customer conversations (and job crew chats) — not the Team or group chats"], ["Draft customer", "Email and text customers — a message goes out as soon as the agent posts it (no approval step)"],
     ]) {
       expect(within(messages).getByText(word)).toBeTruthy();
       expect(within(messages).getByText(helper)).toBeTruthy();
@@ -481,6 +482,27 @@ describe("no state is claimed before it is known", () => {
 });
 
 describe("making a key", () => {
+  // Kyle 2026-11-24: Settings > Agent keys shows "Read the price book" and "Add to the price book and propose changes" as two boxes (drawn from the one
+  // scope table), ticked by role: Inventory both, every other agent but Other the read box only.
+  it("shows the two price book boxes with their labels, ticked by role", async () => {
+    show(data({ keys: [] }));
+    await openNewKey();
+    const agent = screen.getByLabelText("Agent") as HTMLSelectElement;
+    const read = () => screen.getByLabelText("New key scope pricebook:read") as HTMLInputElement;
+    const write = () => screen.getByLabelText("New key scope pricebook:write") as HTMLInputElement;
+    expect(screen.getByText("Read the price book", { exact: false })).toBeTruthy();
+    expect(screen.getByText("Add to the price book and propose changes", { exact: false })).toBeTruthy();
+    expect([read().checked, write().checked]).toEqual([true, false]); // Admin
+    fireEvent.change(agent, { target: { value: "inventory" } });
+    expect([read().checked, write().checked]).toEqual([true, true]);
+    fireEvent.change(agent, { target: { value: "research" } });
+    expect([read().checked, write().checked]).toEqual([true, false]);
+    fireEvent.change(agent, { target: { value: "other" } });
+    expect([read().checked, write().checked]).toEqual([false, false]);
+    fireEvent.click(write());
+    expect(write().checked).toBe(true);
+  });
+
   it("the Agent dropdown prefills scopes and the hub thread limit; Create key is greyed with a reason until there is a name", async () => {
     show(data({ keys: [] }));
     await openNewKey();

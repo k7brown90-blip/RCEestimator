@@ -71,7 +71,6 @@ import type {
   AgentWebhooksSave,
   WebhookTestResult,
   HubDecision,
-  HubAutoSendResponse,
   HubNotifyResponse,
   HubPushKey,
   HubEventView,
@@ -598,6 +597,21 @@ export async function fetchProtectedObjectUrl(path: string): Promise<string> {
  * leak into. So this returns the text as-is for the signing screen to display in a sandboxed
  * iframe.
  */
+/** What saving Settings -> Purchasing "Sales tax rate (%)" did to the price book (server: priceBookTaxReprice.ts). */
+export type TaxRepriceOutcome =
+  | {
+      status: "repriced" | "current" | "skipped_no_saved_rate";
+      previousRate: number | null;
+      newRate: number | null;
+      itemsRepriced: number;
+      assembliesRepriced: number;
+      editsWritten: number;
+      handPriced: Array<{ itemId: string; description: string | null; why: string }>;
+      handPricedCount: number;
+      openDrafts: number;
+    }
+  | { status: "failed"; reason: string };
+
 // ─── Price Book editor payloads (the app is the book — 2026-08-30) ───────────
 export interface PbCatalogAtomic {
   itemId: string;
@@ -609,6 +623,8 @@ export interface PbCatalogAtomic {
   rowType: string | null;
   notes: string | null;
   companyCost: number | null;
+  /** companyCost with the sales tax in it (Kyle, 2026-11-24, "Tax in sell, all items"). Null: no cost, or a hand-set price the tax reprice left alone. */
+  companyCostWithTax?: number | null;
   companyPrice: number | null;
   markupTier: string | null;
   laborNormal: number | null;
@@ -622,6 +638,8 @@ export interface PbCatalogAtomic {
   /** "E" | "C" | "M" | null — per-unit/hundred/thousand. Needed client-side only for the
    * assembly component picker's live labour preview (mirrors laborHoursFor's own divisor use). */
   laborUnitDivisor?: number | null;
+  /** Where the hours came from ("E [NECA 2019-20 p.179, ...]" for an agent's item); shared/priceBookLaborSource.ts reads it as the item's "Labour source". */
+  laborUnitBasisRaw?: string | null;
 }
 
 export interface PbCatalogEdit {
@@ -941,7 +959,7 @@ export const api = {
    * sending an email straight from the CRM." `to: null` uses the record's own primary email.
    */
   sendRecordEmail: (input: { target: "lead" | "account" | "job"; id: string; to?: string | null; cc?: string[]; subject: string; body: string; estimateId?: string }) =>
-    // The AI admin's session does not send: the email is left as a draft for approval ({ sent: false, drafted: true }), work order agent-team U4b.
+    // The AI admin's session sends through the one agent send (Kyle 2026-11-24, no check-ins); a guard that refuses answers 409 with the reason.
     request<{ sent: boolean; drafted?: boolean; messageId?: string; to: string; cc?: string[]; suppressed: boolean }>("/communications/email", {
       method: "POST",
       body: JSON.stringify(input),
@@ -1676,10 +1694,6 @@ export const api = {
     const qs = q.toString();
     return request<AuditResponse>(`/hub/audit${qs ? `?${qs}` : ""}`);
   },
-  // ── Settings -> "AI auto-send rules" (BA8), the owner setting hubAutoSend. ──
-  hubAutoSend: () => request<HubAutoSendResponse>("/owner-settings/hubAutoSend"),
-  saveHubAutoSend: (categories: Record<string, boolean>) =>
-    request<HubAutoSendResponse>("/owner-settings/hubAutoSend", { method: "PUT", body: JSON.stringify({ categories }) }),
   resendHubEvent: (id: string) =>
     request<{ event: HubEventView }>(`/hub/events/${encodeURIComponent(id)}/resend`, { method: "POST" }),
   agentWebhooks: () => request<AgentWebhooksResponse>("/owner-settings/agentWebhooks"),
@@ -1975,7 +1989,7 @@ export const api = {
   /** The Synchrony plan list for the Settings card (the stored list, or the seeded defaults). Carries Synchrony’s rate to Red Cedar - the Settings card only. */
   financingPlans: () => request<{ plans: FinancingPlan[] }>("/crm/financing-plans"),
   saveCompanySetting: (key: string, value: unknown) =>
-    request<{ key: string; value: unknown; updatedAt: string }>(`/crm/settings/${key}`, {
+    request<{ key: string; value: unknown; updatedAt: string; reprice?: TaxRepriceOutcome }>(`/crm/settings/${key}`, {
       method: "PUT",
       body: JSON.stringify(value),
     }),

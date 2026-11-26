@@ -34,7 +34,7 @@ import { app } from "../src/app";
 import { prisma } from "../src/lib/prisma";
 import { hashPin } from "../src/middleware/pinAuth";
 import { ensureThreadFor, type HubReader } from "../src/services/hub";
-import { createDraftMessage } from "../src/services/hubDrafts";
+import { waitingDraft } from "./helpers/waitingDraft"; // Kyle 2026-11-24: an agent message now SENDS when posted; these tests need a card already waiting (a pre-deploy one)
 import { saveCrmLogin, setCrmLoginEnabled, setPowers, setPrincipal } from "../src/services/crmLogin";
 import { saveAdminLogin } from "../src/services/adminLogin";
 import { CRM_POWERS, TECH_TOKEN_ROLE_REASON } from "../shared/crmPowers";
@@ -99,7 +99,7 @@ async function account() {
   return { customer, thread };
 }
 async function emailDraft(threadId: string, over: Record<string, unknown> = {}) {
-  return (await createDraftMessage(AI, { threadId, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday.", ...over })).message;
+  return (await waitingDraft(AI, { threadId, channel: "email", category: "thread_reply", subject: "Tuesday", body: "We can be there Tuesday.", ...over })).message;
 }
 
 const get = (token: string, path: string) => request(app).get(`/health-record${path}`).set(bearer(token));
@@ -148,8 +148,28 @@ describe("who may decide from the field: the one approve_drafts power, never a r
 
   it("another power does not make an approver", async () => {
     const eric = await techPerson("Eric");
-    await giveLogin(eric.id, { powers: ["treasury", "price_book_edit"] });
+    await giveLogin(eric.id, { powers: ["treasury", "bot_keys"] });
     expect((await get(eric.token, "/hub/approvals")).body.data.canApprove).toBe(false);
+  });
+
+  // Changed deliberately (Kyle 2026-11-25, "Yes, same power"): price_book_edit decides price-book proposals, in place of approve_drafts, and only
+  // those. It makes the person an approver for that ONE kind; a customer draft is neither listed for them nor decidable by them.
+  it("price_book_edit alone is an approver for price-book proposals only: a customer draft stays hidden and every decision on it is the approve_drafts 403", async () => {
+    const { thread } = await account();
+    const draft = await emailDraft(thread.id);
+    const eric = await techPerson("Eric");
+    await giveLogin(eric.id, { powers: ["price_book_edit"] });
+    const list = await get(eric.token, "/hub/approvals");
+    expect(list.status).toBe(200);
+    expect(list.body.data.canApprove).toBe(true);
+    expect(list.body.data.cards.find((c: { id: string }) => c.id === draft.id)).toBeUndefined();
+    for (const [route, body] of [["approve", {}], ["edit-approve", { body: "mine" }], ["reject", { reason: "no thanks" }]] as const) {
+      const r = await post(eric.token, `/hub/messages/${draft.id}/${route}`, body);
+      expect(r.status, route).toBe(403);
+      expect(r.body.error.message, route).toBe(POWER);
+    }
+    expect(await statusOf(draft.id)).toBe("pending_approval");
+    expect(resendCalls()).toHaveLength(0);
   });
 });
 
@@ -248,7 +268,7 @@ describe("an approver sees the CRM's cards and decides them through the one serv
     expect(card.approve.editBlockedReason).toBeNull();
 
     // A "Call or email instead" card: decided on the CRM only.
-    const crmOnly = (await createDraftMessage(AI, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "x", body: "Call them", toAddress: `x@${DOMAIN}` })).message;
+    const crmOnly = (await waitingDraft(AI, { threadId: thread.id, channel: "email", category: "thread_reply", subject: "x", body: "Call them", toAddress: `x@${DOMAIN}` })).message;
     await prisma.hubMessage.update({ where: { id: crmOnly.id }, data: { actionKind: "contact_instead" } });
     const ids = (await get(eric.token, "/hub/approvals")).body.data.cards.map((c: { id: string }) => c.id);
     expect(ids).toContain(noAddress.id);

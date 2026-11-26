@@ -30,13 +30,14 @@ import {
   markupTierFor,
   resolveCostBasis,
   sellPriceFor,
+  taxInCost,
   type MarkupTiers,
   type Quotable,
   type RateConfig,
   type SupplierPriceRow,
 } from "./priceBookPricing";
 // The second, job-level check on material markup — see that file for why it exists.
-import { allSelectionCaps, bandsFrom, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
+import { allSelectionCaps, bandsFrom, capBasisCost, capMaterial, type MaterialCapResult } from "./materialMarkupCap";
 // ONE option list for server, CRM and field (2026-10-08) — shared/estimateOptions.ts.
 import { ALL_OPTIONS, BASE_OPTIONS, type EstimateOptionLetter } from "../../shared/estimateOptions";
 
@@ -50,6 +51,8 @@ export interface EngineAtomic {
   itemId: string;
   description: string | null;
   unit: string | null; // "ea" | "ft" | "sq ft" | "hr"
+  /** The catalog "Unit label" - isContinuousLengthMaterial reads it when `unit` is null. Optional so hand-built catalogs need not set it. */
+  unitLabel?: string | null;
   rowType: string | null;
   laborNormal: number | null;
   laborDifficult: number | null;
@@ -60,6 +63,12 @@ export interface EngineAtomic {
   laborUnitDivisor: number | null;
   laborUnitBasisRaw: string | null;
   costBasisUsed: number | null;
+  /**
+   * costBasisUsed with sales tax in it (taxInCost) - set by resolveCatalogAtSupplier. The job-level material cap measures its
+   * ceiling on THIS, so it cannot strip the tax that is inside the sell (Kyle, 2026-11-24: "Tax in sell, all items").
+   * costBasisUsed itself stays PRE-TAX: it is what the frozen line records as the cost to Red Cedar.
+   */
+  costBasisWithTaxUsed?: number | null;
   sellPricePerUnit: number | null;
   necaUnitBasis: string | null;
 
@@ -178,6 +187,8 @@ export interface ComputedLine {
   costBasis: number | null;
   sellPerUnit: number | null;
   materialCost: number | null;
+  /** materialCost with sales tax in it - the basis the material cap measures (capBasisCost). Absent/null: read materialCost. */
+  materialCostWithTax?: number | null;
   materialSell: number | null;
 
   /**
@@ -566,6 +577,9 @@ export function computeEstimate(
         materialCost: atomic.costBasisUsed === null || atomic.costBasisUsed === undefined
           ? null
           : round2(input.quantity * atomic.costBasisUsed),
+        materialCostWithTax: atomic.costBasisWithTaxUsed === null || atomic.costBasisWithTaxUsed === undefined
+          ? null
+          : round2(input.quantity * atomic.costBasisWithTaxUsed),
         materialSell: material,
         flatPriced: true,
         inMaterialCap: isContinuousLengthMaterial(atomic),
@@ -672,6 +686,10 @@ export function computeEstimate(
       costBasis: costBasis ?? null,
       sellPerUnit: sellPerUnit ?? null,
       materialCost,
+      materialCostWithTax:
+        atomic.costBasisWithTaxUsed === null || atomic.costBasisWithTaxUsed === undefined
+          ? null
+          : input.quantity * atomic.costBasisWithTaxUsed,
       materialSell,
       flatPriced: false,
       inMaterialCap: isContinuousLengthMaterial(atomic),
@@ -717,7 +735,9 @@ export function computeEstimate(
     const inOption = computed.filter((l) => l.option === option && l.inMaterialCap);
     if (inOption.length === 0) continue;
 
-    const cost = inOption.reduce((n, l) => n + (l.materialCost ?? 0), 0);
+    // Measured on the cost WITH tax (capBasisCost): the sell has the tax in it, so a pre-tax basis would read 1.0975 x 1.3 as a
+    // blended markup above the ceiling and trim the tax back off (Kyle, 2026-11-24: "Tax in sell, all items").
+    const cost = inOption.reduce((n, l) => n + (capBasisCost(l) ?? 0), 0);
     const sell = inOption.reduce((n, l) => n + (l.materialSell ?? 0), 0);
     const cap = capMaterial(cost, sell, bands);
     materialCaps[option] = cap;
@@ -754,7 +774,7 @@ export function computeEstimate(
   const combinationDiscounts = allSelectionCaps(
     computed.map((l) => ({
       option: l.option,
-      materialCost: l.inMaterialCap ? l.materialCost : null,
+      materialCost: capBasisCost(l),
       materialSell: l.inMaterialCap ? l.materialSell : null,
     })),
     bands,
@@ -1038,7 +1058,9 @@ export function resolveCatalogAtSupplier(
   atomics: EngineAtomic[],
   supplierPrices: SupplierPriceRow[],
   supplierId: string,
-  tiers: MarkupTiers
+  tiers: MarkupTiers,
+  /** The sales tax rate (getSalesTaxRate, the ONE reader) - every sell the engine derives has the tax in it. */
+  taxRate: number,
 ): Map<string, EngineAtomic> {
   const out = new Map<string, EngineAtomic>();
   for (const a of atomics) {
@@ -1051,14 +1073,18 @@ export function resolveCatalogAtSupplier(
       overwriting the numbers he set with the absence of numbers he never entered.
     */
     if (isFlatPriced(a)) {
-      out.set(a.itemId, a);
+      out.set(a.itemId, {
+        ...a,
+        costBasisWithTaxUsed: a.costBasisUsed === null || a.costBasisUsed === undefined ? null : taxInCost(a.costBasisUsed, taxRate),
+      });
       continue;
     }
     const { costBasis } = resolveCostBasis(a.itemId, supplierId, supplierPrices);
     out.set(a.itemId, {
       ...a,
       costBasisUsed: costBasis,
-      sellPricePerUnit: sellPriceFor(costBasis, tiers),
+      costBasisWithTaxUsed: costBasis === null ? null : taxInCost(costBasis, taxRate),
+      sellPricePerUnit: sellPriceFor(costBasis, tiers, taxRate),
     });
   }
   return out;

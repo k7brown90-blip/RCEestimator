@@ -31,7 +31,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { computePricing, loadPricingContext, resolveNewItemId } from "./priceBookCatalog";
+import { computePricing, inTransaction, loadPricingContext, resolveNewItemId } from "./priceBookCatalog";
 
 export const ASSEMBLY_ROW_TYPE = "ASSEMBLY";
 
@@ -260,6 +260,8 @@ export interface CreateAssemblyInput {
   components: ComponentInput[];
   /** Explicit tier overrides at creation. Absent tiers default to the auto-summed value. */
   laborOverrides?: Partial<Record<LaborTier, number>>;
+  /** Text for the "created" PriceBookEdit row (who made it and from what), when there is more to say than the description. */
+  editNote?: string | null;
 }
 
 export async function createAssembly(
@@ -287,7 +289,7 @@ export async function createAssembly(
     }
   }
 
-  const { tiers, rate } = await loadPricingContext(prisma);
+  const { tiers, rate, taxRate } = await loadPricingContext(prisma);
   const computed = computePricing(
     {
       rowType: ASSEMBLY_ROW_TYPE,
@@ -298,9 +300,11 @@ export async function createAssembly(
     },
     tiers,
     rate,
+    taxRate,
   );
 
-  const atomic = await prisma.$transaction(async (tx) => {
+  // inTransaction: a caller that already holds a transaction (the agent door, inside its idempotency record) passes its client and this runs in it.
+  const atomic = await inTransaction(prisma, async (tx) => {
     const created = await tx.priceBookAtomic.create({
       data: {
         itemId,
@@ -332,7 +336,7 @@ export async function createAssembly(
       });
     }
     await tx.priceBookEdit.create({
-      data: { itemId, field: "created", oldValue: null, newValue: `assembly: ${input.description}`, editedBy },
+      data: { itemId, field: "created", oldValue: null, newValue: `assembly: ${input.description}`, editedBy, note: input.editNote ?? null },
     });
     return created;
   });
@@ -362,7 +366,7 @@ export async function setAssemblyComponents(
     // else: leave the stored override untouched; drift is reported, not applied.
   }
 
-  const { tiers, rate } = await loadPricingContext(prisma);
+  const { tiers, rate, taxRate } = await loadPricingContext(prisma);
   const computed = computePricing(
     {
       rowType: ASSEMBLY_ROW_TYPE,
@@ -373,6 +377,7 @@ export async function setAssemblyComponents(
     },
     tiers,
     rate,
+    taxRate,
   );
 
   const atomic = await prisma.$transaction(async (tx) => {
@@ -421,7 +426,7 @@ export async function setLaborOverride(
     data[OVERRIDE_FIELD[tier]] = true;
   }
 
-  const { tiers, rate } = await loadPricingContext(prisma);
+  const { tiers, rate, taxRate } = await loadPricingContext(prisma);
   const merged: Record<LaborTier, number | null> = {
     laborNormal: existing.laborNormal, laborDifficult: existing.laborDifficult, laborVeryDifficult: existing.laborVeryDifficult,
   };
@@ -430,6 +435,7 @@ export async function setLaborOverride(
     { rowType: ASSEMBLY_ROW_TYPE, companyCost: existing.companyCost, ...merged },
     tiers,
     rate,
+    taxRate,
   );
 
   const atomic = await prisma.$transaction(async (tx) => {

@@ -7,10 +7,12 @@
  *   team_reply        a drafted in-app post in a job, Team, Dev or Training thread
  *   contact_instead   "Call or email instead" for an opted-out customer - registered for step 6 (P2B-3/7)
  *   opt_out_review    "Opted out by text - review" - registered for step 6 (P2B-8)
+ *   price_change      an AI agent's proposed price, hours or name change to an EXISTING price-book item (Kyle 2026-11-24); Approve applies it
  *
  * A kind stored on HubMessage.actionKind. A message with no actionKind is a plain draft and its kind is
  * worked out from its channel (kindOfMessage in the server registry).
  */
+import type { CrmPower } from "../crmPowers";
 import { messageCategoryFor, type MessageClass } from "./messageCategories";
 import { isSmsPurposeKey, smsPurposeLabel } from "../sms/purposes";
 
@@ -19,9 +21,17 @@ export const CARD_KINDS = {
   team_reply: { label: "Reply in a conversation", implemented: true },
   contact_instead: { label: "Call or email instead", implemented: false },
   opt_out_review: { label: "Opted out by text — review", implemented: false },
+  price_change: { label: "Price book change", implemented: true },
 } as const;
 
 export type CardKind = keyof typeof CARD_KINDS;
+
+/**
+ * The CRM power that decides a kind of its own, IN PLACE OF approve_drafts (Kyle 2026-11-25 on price proposals: "Yes, same power" - whoever holds
+ * price_book_edit approves them). ONE list, read by the server's registry (services/hubActions/registry.ts), the decision routes and the card
+ * lists. A kind not listed is decided by approve_drafts.
+ */
+export const KIND_APPROVER_POWERS: Partial<Record<CardKind, CrmPower>> = { price_change: "price_book_edit" };
 
 /**
  * Kinds the field app does not decide (work order agent-team, U10; amendment on "Call or email instead": "CRM only,

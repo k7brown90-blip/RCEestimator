@@ -45,6 +45,7 @@ import { unreviewedReasons, type FieldOpenQuestion, type QuoteSuggestedLine } fr
 import { COPY_REFUSED_CHANGE_ORDER, COPY_REFUSED_DIAGNOSTIC } from "../../shared/draftLifecycle";
 import { BALLPARK_ON_LEAD_REASON, isBallparkOnLead } from "../../shared/leadBallpark";
 import { logSystemEvent } from "./systemEvents";
+import { getSalesTaxRate } from "./purchasingSettings";
 
 export interface RateContext {
   rc: RateConfig;
@@ -146,6 +147,9 @@ export async function loadCatalogAtSupplier(
       itemId: true,
       description: true,
       unit: true,
+      // The CRM "Unit label" (and an agent's `unit` on create) lives here; isContinuousLengthMaterial falls back to it when `unit` is null
+      // (Kyle 2026-11-25, agents send the item's unit). Without it an ft / lf item was never per-foot to the engine or the field price sheet.
+      unitLabel: true,
       rowType: true,
       laborNormal: true,
       laborDifficult: true,
@@ -183,7 +187,8 @@ export async function loadCatalogAtSupplier(
     sellPricePerUnit: a.companyPrice ?? null,
   }));
 
-  return resolveCatalogAtSupplier(engineAtomics, supplierPrices, supplierId, tiers);
+  // Sales tax is inside every sell (Kyle, 2026-11-24, "Tax in sell, all items") - the ONE reader, the same number the editor priced with.
+  return resolveCatalogAtSupplier(engineAtomics, supplierPrices, supplierId, tiers, await getSalesTaxRate(prisma));
 }
 
 // ─── Catalog browse — the ONE read path for "what is in the catalog" ────────────

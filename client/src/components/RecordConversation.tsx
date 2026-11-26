@@ -32,7 +32,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
 import { refreshHub, useHubApprovals, useHubTimeline, type TimelineKey } from "../lib/hubQueries";
-import { authorLabel, automaticTextLine, messageStatusChip, whenText } from "../lib/hubLabels";
+import { aiSentLine, authorLabel, automaticTextLine, messageStatusChip, whenText } from "../lib/hubLabels";
 import { sendBlockText } from "../../../shared/hub/sendBlocks";
 import type { TimelineEntry, TimelineMessage } from "../../../shared/hub/views";
 import { DeliveryChip } from "./DeliveryChip";
@@ -56,6 +56,7 @@ function Tag({ children }: { children: ReactNode }) {
 function MessageEntry({ message, compact, onReview }: { message: TimelineMessage; compact: boolean; onReview: () => void }) {
   const chip = messageStatusChip(message.status, message.messageClass);
   const autoLine = automaticTextLine(message);
+  const sentByAi = aiSentLine(message);
   const aiWaiting = (message.status === "pending_approval" || message.status === "draft") && !message.deleted;
   return (
     <>
@@ -66,6 +67,7 @@ function MessageEntry({ message, compact, onReview }: { message: TimelineMessage
           {" "}· {whenText(message.createdAt)}
           {message.editedAt && <span className="text-amber-800"> · edited {whenText(message.editedAt)}</span>}
           {autoLine && <span data-testid="automatic-text-line"> · {autoLine}</span>}
+          {sentByAi && <span data-testid="ai-sent-line"> · {sentByAi}</span>}
         </p>
         <span className="flex items-center gap-1">
           {chip && <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${chip.tone}`} title={chip.title}>{chip.label}</span>}

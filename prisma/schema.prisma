@@ -2733,6 +2733,10 @@ model PriceBookAtomic {
   sellDifficult     Float?
   sellVeryDifficult Float?
   companyCost       Float? // internal: what it costs RCE
+  // Sales tax INSIDE the sell (Kyle, 2026-11-24: "Tax in sell, all items"): companyCost stays the PRE-TAX shelf price; this is
+  // round2(companyCost x (1 + sales tax rate)), written by computePricing (priceBookCatalog.ts) with every price. Null where the item
+  // carries no cost or its price is hand-set (priceBookTaxReprice.ts leaves those alone).
+  companyCostWithTax Float?
   companyPrice      Float? // internal: tier-marked-up material, before labour
   // The unit is embedded in Kyle's item names ("- per ft", "- per box", "- per hour"); parsed out
   // once at import so a quantity field can say what it is counting.
@@ -3712,6 +3716,9 @@ model IssuedEstimateLine {
   /// column E is what we see to track spending." Frozen alongside the charge so the company copy
   /// can show both and the margin on a signed job is a fact rather than a re-derivation.
   materialCost  Float?
+  /// Material cost INCLUDING sales tax - the basis the job-level material cap measures a continuous-length line on, so the cap never strips
+  /// the tax that is inside the sell (Kyle, 2026-11-24: "Tax in sell, all items"). Null on estimates issued before 2026-11-25: read as materialCost.
+  materialCostWithTax Float?
   /// Priced FLAT from Kyle's own sell columns (his catalog tab / in-app items). The combination
   /// discount recomputed from frozen lines skips these — their price is the book's price
   /// (2026-08-31). Frozen here so the exemption never depends on the live catalog.

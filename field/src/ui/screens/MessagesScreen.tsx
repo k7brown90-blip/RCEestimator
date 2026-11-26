@@ -202,7 +202,7 @@ export function MessagesScreen({ onBack, openThreadId, openApprovals }: { onBack
           className="w-full rounded-lg border border-amber-600 bg-amber-950/40 p-3 text-left text-sm font-semibold text-amber-100"
         >
           {approvalChipLabel(approvals)}
-          <span className="mt-0.5 block text-xs font-normal text-amber-200">Drafts the AI team left for you to send, edit or reject.</span>
+          <span className="mt-0.5 block text-xs font-normal text-amber-200">Price book changes the AI team proposed, Team posts from an AI key whose &quot;Team posts publish immediately&quot; box is off, and any older drafts, for you to approve or reject (drafts and posts can also be edited). Its customer emails and texts go out on their own.</span>
         </button>
       )}
       {error && <p className="rounded-lg bg-slate-800 p-2 text-xs text-amber-200">{error}</p>}

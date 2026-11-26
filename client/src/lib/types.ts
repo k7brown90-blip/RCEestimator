@@ -2747,12 +2747,6 @@ export type HubDecision = {
   send: { status: string; error: string | null } | null;
 };
 
-/** GET/PUT /owner-settings/hubAutoSend: the value, and whether the server-side gate lets anything go. */
-export type HubAutoSendResponse = {
-  key: "hubAutoSend";
-  value: import("../../../shared/hub/autoSendCategories").HubAutoSendValue;
-  status?: import("../../../shared/hub/autoSendCategories").HubAutoSendStatus;
-};
 
 /** Settings -> "Message reminders" (U8), the owner setting `hubNotify`: the hours of the day, Chicago. Weekdays are fixed. */
 export type HubNotifyResponse = {

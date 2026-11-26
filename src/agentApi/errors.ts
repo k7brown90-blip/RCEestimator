@@ -36,6 +36,8 @@ export const AGENT_ERRORS = {
   bad_time: { status: 400, retryable: false, reason: "Times must be ISO 8601 with an offset, like 2026-11-23T09:00:00-06:00." },
   bad_cursor: { status: 400, retryable: false, reason: "The cursor is not valid. Start again from the first page." },
   idempotency_conflict: { status: 409, retryable: false, reason: "That idempotency_key was already used with a different request." },
+  // Price book (Kyle 2026-11-24): a new item whose name is a near-duplicate of one already in the same category. The body carries the existing item.
+  duplicate_item: { status: 409, retryable: false, reason: "The price book already has an item with that name in that category." },
   in_progress: { status: 409, retryable: true, reason: "An identical request is still being processed. Retry shortly." },
   internal: { status: 500, retryable: true, reason: "Something went wrong on our side." },
 } as const;
@@ -48,12 +50,16 @@ export interface AgentErrorBody {
   reason: string;
   retryable: boolean;
   retry_after?: number;
+  /** Extra data a refusal carries (the existing item behind a duplicate_item), already projected through an agent profile. */
+  existing_item?: unknown;
 }
 
 export interface AgentErrorOptions {
   /** Replaces the catalog sentence, e.g. the CRM screen's own greyed-button reason. */
   reason?: string;
   retryAfterSeconds?: number;
+  /** Carried into the body as `existing_item` (duplicate_item only). Must already be agent-safe. */
+  existingItem?: unknown;
 }
 
 /** Throw this from agent code for a known refusal; `toAgentError` turns it into the response. */
@@ -61,6 +67,7 @@ export class AgentApiError extends Error {
   readonly code: AgentErrorCode;
   readonly reason: string;
   readonly retryAfterSeconds?: number;
+  readonly existingItem?: unknown;
 
   constructor(code: AgentErrorCode, options: AgentErrorOptions = {}) {
     super(code);
@@ -68,6 +75,7 @@ export class AgentApiError extends Error {
     this.code = code;
     this.reason = options.reason ?? AGENT_ERRORS[code].reason;
     this.retryAfterSeconds = options.retryAfterSeconds;
+    this.existingItem = options.existingItem;
   }
 }
 
@@ -75,12 +83,24 @@ export function agentErrorBody(code: AgentErrorCode, options: AgentErrorOptions 
   const entry = AGENT_ERRORS[code];
   const body: AgentErrorBody = { code, reason: options.reason ?? entry.reason, retryable: entry.retryable };
   if (options.retryAfterSeconds !== undefined) body.retry_after = Math.max(1, Math.ceil(options.retryAfterSeconds));
+  if (options.existingItem !== undefined) body.existing_item = options.existingItem;
   return body;
 }
 
 export interface AgentErrorResult {
   status: number;
   body: AgentErrorBody;
+}
+
+/**
+ * A schema may carry its own sentence for the agent (a constant written in this repo, never a value the caller sent) by starting the issue message
+ * with OWN_REASON_PREFIX. Those sentences, and only those, are added to the refusal's reason (Kyle 2026-11-25: the missing unit on a price book
+ * create is refused with the field named and examples). Every other issue still names its FIELD only.
+ */
+export const OWN_REASON_PREFIX = "agent-reason: ";
+export function ownReasonsOf(err: ZodError): string[] {
+  const out = err.issues.map((i) => i.message).filter((m) => m.startsWith(OWN_REASON_PREFIX)).map((m) => m.slice(OWN_REASON_PREFIX.length));
+  return [...new Set(out)].slice(0, 3);
 }
 
 /**
@@ -93,17 +113,18 @@ export function toAgentError(err: unknown, route?: string): AgentErrorResult {
   if (err instanceof AgentApiError) {
     return {
       status: AGENT_ERRORS[err.code].status,
-      body: agentErrorBody(err.code, { reason: err.reason, retryAfterSeconds: err.retryAfterSeconds }),
+      body: agentErrorBody(err.code, { reason: err.reason, retryAfterSeconds: err.retryAfterSeconds, existingItem: err.existingItem }),
     };
   }
   if (err instanceof ZodError) {
     const fields = [...new Set(err.issues.map((i) => i.path.join(".") || "(body)"))].slice(0, 10);
+    const own = ownReasonsOf(err);
     // A time field that failed the offset rule gets its own code, so an agent can fix it.
     const badTime = err.issues.some((i) => /datetime|iso/i.test(`${i.code} ${"format" in i ? String(i.format) : ""}`));
     const code: AgentErrorCode = badTime ? "bad_time" : "bad_request";
     return {
       status: AGENT_ERRORS[code].status,
-      body: agentErrorBody(code, { reason: `${AGENT_ERRORS[code].reason} Check: ${fields.join(", ")}.` }),
+      body: agentErrorBody(code, { reason: `${AGENT_ERRORS[code].reason} Check: ${fields.join(", ")}.${own.length > 0 ? ` ${own.join(" ")}` : ""}` }),
     };
   }
   logSystemEvent("error", "agent_api", err instanceof Error ? err.message : "non-error thrown", {

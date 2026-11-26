@@ -8,7 +8,9 @@
  *
  *  1. THE WORKBOOK'S MATH, EXACTLY. Sell prices recompute the way Kyle's tab
  *     computed them and the import parity-asserted them:
- *       companyPrice = companyCost × tier multiplier   (Rate Config tiers)
+ *       companyPrice = companyCost × (1 + sales tax rate) × tier multiplier   (Rate Config tiers; the tax is the
+ *                      Settings -> Purchasing "Sales tax rate (%)" - Kyle, 2026-11-24: "Tax in sell, all items";
+ *                      companyCost stays the PRE-TAX shelf price and the tier is read off it)
  *       sell_d       = round(laborHours_d × billed rate + companyPrice, 2)
  *     The rate is Rate Config `billedLaborRate` ($100/hr from 2026-09-01; $150 before).
  *     Changing it recomputes every sell column — services/billedRateChange.ts, audited (Settings ->
@@ -20,9 +22,11 @@
  *     item disappears from pickers, never from history.
  */
 
-import type { PrismaClient } from "@prisma/client";
-import { markupMultiplierFor, markupTierFor, type MarkupTiers } from "./priceBookPricing";
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { IN_APP_LABOR_BASIS_RAW, laborBasisRawFor, laborSourceText } from "../../shared/priceBookLaborSource";
+import { markupMultiplierFor, markupTierFor, taxInCost, type MarkupTiers } from "./priceBookPricing";
 import { loadBilledLaborRate } from "./laborRate";
+import { getSalesTaxRate } from "./purchasingSettings";
 import { isAssemblyRowType } from "./priceBookAssembly";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -51,16 +55,22 @@ interface PricingInput {
 
 export interface ComputedPricing {
   markupTier: string;
+  /** companyCost with sales tax in it: round2(companyCost x (1 + tax rate)). Null where the row carries no cost (labour only, or blank). */
+  companyCostWithTax: number | null;
   companyPrice: number | null;
   sellNormal: number | null;
   sellDifficult: number | null;
   sellVeryDifficult: number | null;
 }
 
-/** Tiers and the live billed rate together — every price the editor writes comes from these. */
-export async function loadPricingContext(prisma: PrismaClient): Promise<{ tiers: MarkupTiers; rate: number }> {
-  const [tiers, rate] = await Promise.all([loadMarkupTiers(prisma), loadBilledLaborRate(prisma)]);
-  return { tiers, rate };
+/**
+ * Tiers, the live billed rate and the live sales tax rate together — every price the editor writes comes from these.
+ * The tax rate is read by the ONE reader (getSalesTaxRate, Settings -> Purchasing "Sales tax rate (%)"), so the CRM editor, the
+ * agent door, the cascade and the preview all price at the same number.
+ */
+export async function loadPricingContext(prisma: PrismaClient): Promise<{ tiers: MarkupTiers; rate: number; taxRate: number }> {
+  const [tiers, rate, taxRate] = await Promise.all([loadMarkupTiers(prisma), loadBilledLaborRate(prisma), getSalesTaxRate(prisma)]);
+  return { tiers, rate, taxRate };
 }
 
 export interface SellInputs {
@@ -96,14 +106,25 @@ export function sellsAtRate(
   };
 }
 
-/** The workbook's formulas, verbatim, at the given billed rate — see kylesTabMapping's parity assertion. */
-export function computePricing(input: PricingInput, tiers: MarkupTiers, rate: number): ComputedPricing {
+/**
+ * The book's formulas at the given billed rate and sales tax rate (Kyle, 2026-11-24, "Tax in sell, all items":
+ * sell = hours x shop rate + (cost x (1 + tax rate)) x markup):
+ *   companyCostWithTax = round2(cost x (1 + tax))
+ *   companyPrice       = round2(cost x (1 + tax) x tier multiplier)   - rounded ONCE, from the unrounded product
+ *   sell_d             = round2(hours_d x rate + companyPrice)
+ * `companyCost` is the PRE-TAX shelf price, and the markup TIER is chosen on it (never on the tax-in figure). An assembly's cost is
+ * its rolled-up PRE-TAX component cost, so the tax goes on once, here - never summed through a component's companyPrice or tax-in cost.
+ */
+export function computePricing(input: PricingInput, tiers: MarkupTiers, rate: number, taxRate: number): ComputedPricing {
   const laborOnly = (input.rowType ?? "").toUpperCase().includes("LABOR ONLY");
   const cost = laborOnly ? null : input.companyCost;
   const mult = markupMultiplierFor(cost ?? null, tiers);
-  const companyPrice = cost !== null && cost !== undefined && mult !== null ? round2(cost * mult) : null;
+  const hasCost = cost !== null && cost !== undefined;
+  const companyCostWithTax = hasCost ? round2(taxInCost(cost, taxRate)) : null;
+  const companyPrice = hasCost && mult !== null ? round2(taxInCost(cost, taxRate) * mult) : null;
   return {
     markupTier: markupTierFor(cost ?? null),
+    companyCostWithTax,
     companyPrice,
     ...sellsAtRate({ ...input, companyPrice }, rate),
   };
@@ -226,11 +247,19 @@ export async function planAtomicUpdate(
     data["laborUnitDivisor"] = 1;
     data["laborUnitBasisRaw"] = "E [in-app editor — per-unit hours, already resolved]";
     audits.push({ field: "laborUnitDivisor", oldValue: null, newValue: "1" });
+  } else if (touchesHours) {
+    // An agent's NECA reference ("Labour source") describes the hours it typed. New hours are somebody else's number, so the reference no longer
+    // stands: put the plain in-app text back (the drawer shows no "Labour source" for it) and record it like every other change.
+    const prevRaw = (existing as { laborUnitBasisRaw: string | null }).laborUnitBasisRaw;
+    if (laborSourceText(prevRaw) !== null) {
+      data["laborUnitBasisRaw"] = IN_APP_LABOR_BASIS_RAW;
+      audits.push({ field: "laborUnitBasisRaw", oldValue: prevRaw, newValue: IN_APP_LABOR_BASIS_RAW });
+    }
   }
 
   // Any pricing input changed → recompute tier and sells the workbook's way.
   if (audits.some((a) => PRICING_FIELDS.has(a.field))) {
-    const { tiers, rate } = await loadPricingContext(prisma);
+    const { tiers, rate, taxRate } = await loadPricingContext(prisma);
     // `in data` not `??` — clearing a value to null is an edit, not an absence.
     const pick = <K extends keyof PricingInput>(k: K): PricingInput[K] =>
       (k in data ? data[k] : (existing as Record<string, unknown>)[k]) as PricingInput[K];
@@ -241,7 +270,7 @@ export async function planAtomicUpdate(
       laborDifficult: pick("laborDifficult"),
       laborVeryDifficult: pick("laborVeryDifficult"),
     };
-    const computed = computePricing(merged, tiers, rate);
+    const computed = computePricing(merged, tiers, rate, taxRate);
     for (const [k, v] of Object.entries(computed)) {
       const prev = (existing as Record<string, unknown>)[k] ?? null;
       if (String(prev ?? "") !== String(v ?? "")) {
@@ -303,6 +332,23 @@ export interface CreateAtomicInput {
   laborDifficult?: number | null;
   laborVeryDifficult?: number | null;
   notes?: string | null;
+  /**
+   * Where the typed hours came from (an agent's NECA reference: edition, page, table, row). Stored as the item's labour source
+   * (laborUnitBasisRaw, shared/priceBookLaborSource.ts) and shown on the CRM item drawer as "Labour source". Absent: the plain in-app text.
+   */
+  laborSource?: string | null;
+  /** Text for the "created" PriceBookEdit row (who made it and with what), when the caller has more to say than the description. */
+  editNote?: string | null;
+}
+
+/**
+ * Run `fn` in a transaction, or - when `client` already IS a transaction (an interactive transaction client has no `$transaction`; the
+ * agent door creates inside withIdempotency's transaction so the item and its replay record commit together) - inside that one.
+ */
+export async function inTransaction<T>(client: PrismaClient | Prisma.TransactionClient, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  const maybe = client as { $transaction?: PrismaClient["$transaction"] };
+  if (typeof maybe.$transaction === "function") return (maybe.$transaction as (f: (tx: Prisma.TransactionClient) => Promise<T>) => Promise<T>)(fn);
+  return fn(client as Prisma.TransactionClient);
 }
 
 /**
@@ -355,7 +401,7 @@ export async function createAtomic(
   if (!resolved.ok) return resolved;
   const itemId = resolved.itemId;
 
-  const { tiers, rate } = await loadPricingContext(prisma);
+  const { tiers, rate, taxRate } = await loadPricingContext(prisma);
   const computed = computePricing(
     {
       rowType: input.rowType,
@@ -366,9 +412,10 @@ export async function createAtomic(
     },
     tiers,
     rate,
+    taxRate,
   );
 
-  const atomic = await prisma.$transaction(async (tx) => {
+  const atomic = await inTransaction(prisma, async (tx) => {
     const created = await tx.priceBookAtomic.create({
       data: {
         itemId,
@@ -394,13 +441,13 @@ export async function createAtomic(
         */
         laborUnitBasis: "E",
         laborUnitDivisor: 1,
-        laborUnitBasisRaw: "E [in-app editor — per-unit hours, already resolved]",
+        laborUnitBasisRaw: laborBasisRawFor(input.laborSource),
         laborStatus: "IN-APP",
         ...computed,
       },
     });
     await tx.priceBookEdit.create({
-      data: { itemId, field: "created", oldValue: null, newValue: input.description, editedBy },
+      data: { itemId, field: "created", oldValue: null, newValue: input.description, editedBy, note: input.editNote ?? null },
     });
     return created;
   });
