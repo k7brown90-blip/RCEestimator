@@ -70,7 +70,7 @@ export function ApprovalCard({
   const customerFacing = card.chip.tone === "customer";
   const isEmail = card.channel === "email";
 
-  // Edit is greyed only for reasons editing cannot cure (the power, consent, marketing...). A draft that is
+  // Edit is greyed only for reasons editing cannot cure (the power, a STOP reply, marketing...). A draft that is
   // blocked because of its own words, or a missing address, keeps Edit live: Edit is the remedy.
   const { lock, editLock, rejectLock, approveLabel: retry } = cardLocks(card, canApprove, approveReason);
   const lockText = rejectLock ?? "";

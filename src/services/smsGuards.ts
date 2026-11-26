@@ -11,7 +11,7 @@ import { last10 } from "./hub";
 /**
  * Who an "internal" text may go to (ruling A): Kyle's number, the operator alert number, or an active
  * technician's number. Anyone else - a customer - is refused as internal, because internal texts skip the
- * consent gate and the footer.
+ * STOP check and the footer.
  */
 export async function isInternalSmsNumber(phone: string): Promise<boolean> {
   const digits = last10(phone);

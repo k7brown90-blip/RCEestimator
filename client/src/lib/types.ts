@@ -780,11 +780,10 @@ export type Lead = {
    */
   ballparks?: LeadBallpark[];
   /**
-   * TRI-STATE, READ-ONLY IN THE CRM (PUNCHLIST E1). `true` = ticked the consent box on the
-   * website form, `false` = shown the box and left it unticked, `null` = never asked (phone,
-   * email, manual leads). This is what the A2P registration attests to and only `true` opens
-   * the SMS gate — so no CRM surface renders it as a checkbox, and `LeadWriteInput` below
-   * deliberately has no such field: a plain checkbox would collapse `null` to `false`.
+   * Kyle 2026-11-26: `false` means ONE thing, the person replied STOP (the only reason a text is
+   * blocked); `true` = ticked the website form's box; `null` = everything else. A lead with a
+   * phone is textable whether it is `null` or `true`. No CRM surface shows it, and `LeadWriteInput`
+   * below deliberately has no such field.
    */
   smsConsent?: boolean | null;
   createdAt: string;

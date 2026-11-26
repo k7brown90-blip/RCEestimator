@@ -19,11 +19,11 @@ model Customer {
   name              String
   email             String?
   phone             String?
-  // Tri-state SMS consent, carried from the lead at conversion. true = opted in
-  // (web form checkbox), false = explicitly declined or texted STOP, null =
-  // never asked (phone leads, manual entries). sendSms() only sends to a known
-  // Customer/Lead when this is true — null and false are both "not opted in"
-  // (the website checkbox is the only opt-in channel) — see services/twilio.ts.
+  // STOP flag, carried from the lead at conversion. Kyle 2026-11-26 ("REMOVE THE SMS CONSENT GATE
+  // COMPLETELY ... Keep STOP handling only"): false = the person replied STOP (routes/inboundSms.ts
+  // writes it; START writes true); null and true both mean the person may be texted. sendSms() blocks
+  // a known Customer/Lead ONLY when this is false - see services/twilio.ts. Data migration
+  // 20261126100000_sms_stop_only turned every old "declined the website box" false into null.
   smsConsent        Boolean?
   // WHICH PLATFORM brought this account (Kyle, 2026-09-20): copied from Lead.platform when the
   // lead converts (a new account takes it; an existing account keeps the one it already has).
@@ -1657,11 +1657,9 @@ model Lead {
   warrantyNote      String?
   // ── Follow-up & pipeline fields (Phase 1 data model) ──
   contactPreference String? // "phone" | "email" | "either"
-  // Tri-state: true = checked the consent box on the website form, false =
-  // explicitly declined (box shown, left unchecked on a web lead), null = never
-  // asked (phone/email/manual leads). This is the record A2P registration
-  // attests to — the website checkbox is the only opt-in channel, so only
-  // `true` clears the send gate in services/twilio.ts; null does NOT.
+  // Kyle 2026-11-26: false = the person replied STOP (the ONLY thing that blocks a text, services/twilio.ts);
+  // true = ticked the website form's box; null = everything else (phone, manual, unticked box). A lead
+  // with a phone is textable whether this is null or true. The website form never writes false.
   smsConsent        Boolean?
   // "new" | "booked" | "unresolved" | "planning" | "no_answer" | "lost" | "won". The VALUE "won"
   // stays (Savannah's call-disposition tool outside this repo writes it) but it MEANS

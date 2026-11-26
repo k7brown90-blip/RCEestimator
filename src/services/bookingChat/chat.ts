@@ -186,9 +186,10 @@ async function runMessage(
   if (chat.messageCount >= MAX_MESSAGES_PER_CHAT) return { reply: CHAT_LIMIT_REPLY, ...viewOf(chat), ended: true, limit: "message_count" };
   if (chat.aiCallCount >= MAX_AI_CALLS_PER_CHAT) return { reply: CHAT_LIMIT_REPLY, ...viewOf(chat), ended: true, limit: "ai_calls" };
 
-  // Consent is recorded only from a boolean the website sent with this message — never inferred.
-  if (typeof smsConsent === "boolean" && chat.lead) {
-    await prisma.lead.update({ where: { id: chat.lead.id }, data: { smsConsent } });
+  // Kyle 2026-11-26: consent is no longer asked and an unticked box is not a refusal. A ticked box the website sent is still recorded
+  // (true); an unticked one writes NOTHING - `false` now means one thing only, that the person replied STOP (routes/inboundSms.ts).
+  if (smsConsent === true && chat.lead) {
+    await prisma.lead.update({ where: { id: chat.lead.id }, data: { smsConsent: true } });
   }
 
   const ctx: ToolContext = { chatId, smsConsent, device, ended: false, summaries: [] };

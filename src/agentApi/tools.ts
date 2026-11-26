@@ -105,7 +105,7 @@ const readThread = defineTool({
 const postMessage = defineTool({
   name: "post_message",
   description: "Post in a thread (the same as POST /api/hub/messages). In a Team, group or crew chat it publishes at once when this key's Team posts publish immediately box is on; "
-    + "an email or text to a customer is SENT when you post it (nobody approves it first; it is still refused for a customer who opted out or has not agreed to texts, an address that unsubscribed, or while texting or Agent access is off - the answer's status says sent or blocked and not_sent_reason says why), and a post in a Training thread is published. Say where it goes with thread_id (or one of customerId, leadId, jobId, estimateId for a customer message). "
+    + "an email or text to a customer is SENT when you post it (nobody approves it first; it is still refused for a customer who replied STOP, an address that unsubscribed, or while texting or Agent access is off - the answer's status says sent or blocked and not_sent_reason says why), and a post in a Training thread is published. Say where it goes with thread_id (or one of customerId, leadId, jobId, estimateId for a customer message). "
     + "idempotency_key is required (8 to 128 characters): a retry with the same key and request returns the first result and posts nothing twice.",
   input: postMessageInputSchema,
   scopes: hubRouteScopes("post"),

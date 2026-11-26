@@ -1,6 +1,7 @@
 /**
- * The lead drawer: the Leads card's actions plus the edit form in place — and the E1 guard:
- * `smsConsent` is tri-state, shown as words, never a control, and never in a PATCH payload.
+ * The lead drawer: the Leads card's actions plus the edit form in place — and the E1 guard that `smsConsent` is never in a PATCH payload.
+ * Kyle 2026-11-26 ("REMOVE THE SMS CONSENT GATE COMPLETELY"): the drawer no longer shows an "SMS consent:" line at all, and its
+ * Conversation's "Text the customer" box works for any lead with a phone, whatever its smsConsent.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -39,14 +40,16 @@ function mockCommon(row: Lead) {
 }
 
 describe("LeadDrawer", () => {
-  it("renders the lead with its actions and shows a never-asked SMS consent as words, not a checkbox", async () => {
+  it("renders the lead with its actions and shows NO SMS consent line (Kyle 2026-11-26: the line is removed, nothing replaces it)", async () => {
     mockCommon(lead({ smsConsent: null }));
 
     renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
 
     const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
-    expect(within(dialog).getByText(/never asked/)).toBeInTheDocument();
-    expect(dialog.querySelector("[data-sms-consent]")).toHaveAttribute("data-sms-consent", "null");
+    expect(within(dialog).queryByText(/SMS consent/i)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/never asked/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/opt-in channel/)).not.toBeInTheDocument();
+    expect(dialog.querySelector("[data-sms-consent]")).toBeNull();
     expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Mark Contacted" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Book on the Calendar" })).toBeInTheDocument();
@@ -111,12 +114,32 @@ describe("LeadDrawer", () => {
     expect(within(dialog).queryByText(/received 11\/1[45]\/2026/)).not.toBeInTheDocument();
   });
 
-  it("distinguishes declined from never asked", async () => {
+  it("shows no consent wording even for a lead who replied STOP (smsConsent false); the Conversation's text box says why it is greyed", async () => {
     mockCommon(lead({ smsConsent: false, source: "web" }));
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([], { textBlock: "This person replied STOP, so no texts will be sent to them. Call or email instead." }));
     renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
     const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
-    expect(within(dialog).getByText(/declined/)).toBeInTheDocument();
-    expect(dialog.querySelector("[data-sms-consent]")).toHaveAttribute("data-sms-consent", "false");
+    expect(within(dialog).queryByText(/declined/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/SMS consent/i)).not.toBeInTheDocument();
+    const textButton = await within(dialog).findByRole("button", { name: "Text the customer" });
+    expect(textButton).toBeDisabled();
+    expect(within(dialog).getByText(/replied STOP/)).toBeInTheDocument();
+  });
+
+  it("a brand-new hand-entered lead (phone source, smsConsent null, never on the website form) can be texted: Text the customer, type, Send text", async () => {
+    mockCommon(lead({ smsConsent: null, source: "phone", phone: "6155550199" }));
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([], { scope: { customerId: null, leadId: "lead-1", visitId: null, propertyId: null, name: "Jane Homeowner" }, textBlock: null }));
+    const send = vi.spyOn(api, "sendRecordText").mockResolvedValue({ sent: true, messageId: "m-1" });
+    renderWithProviders(<DrawerHost />, { route: "/leads?lead=lead-1" });
+    const dialog = await screen.findByRole("dialog", { name: "Jane Homeowner" });
+    const open = await within(dialog).findByRole("button", { name: "Text the customer" });
+    expect(open).toBeEnabled();
+    fireEvent.click(open);
+    fireEvent.change(within(dialog).getByLabelText("Text message"), { target: { value: "We can be there Tuesday at 9. Does that work?" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send text" }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toMatchObject({ target: "lead", id: "lead-1", body: "We can be there Tuesday at 9. Does that work?" });
+    expect(await within(dialog).findByText("Text sent.")).toBeInTheDocument();
   });
 
   it("edits the lead in place and the PATCH never carries smsConsent", async () => {

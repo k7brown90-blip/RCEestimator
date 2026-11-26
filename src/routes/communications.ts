@@ -27,6 +27,8 @@ import { resolveRecordRecipients, sendRecordMessage, type RecordEmailTarget } fr
 import { ccSchema } from "../services/emailCc";
 import { HubError, ensureThreadFor, readerFor } from "../services/hub";
 import { createDraftMessage } from "../services/hubDrafts";
+import { OFFICE_TEXT_CATEGORY, sendOfficeText } from "../services/hubOfficeText";
+import { prisma } from "../lib/prisma";
 
 export const communicationsRouter = express.Router();
 
@@ -98,4 +100,57 @@ communicationsRouter.post("/communications/email", asyncHandler(async (req, res)
     return;
   }
   res.json({ sent: true, to: result.to, cc: result.cc, suppressed: result.suppressed });
+}));
+
+const textBody = z.object({
+  target: z.enum(TARGETS),
+  id: z.string().trim().min(1),
+  body: z.string().trim().min(1, "A text needs words.").max(1000),
+  /** One id per composed text (the screen makes it once and reuses it on every retry), so a lost answer never sends the text twice. */
+  clientMessageId: z.string().trim().min(8).max(100).optional(),
+});
+
+/**
+ * POST /communications/text - { target, id, body, clientMessageId? }. The Conversation's "Text the customer" box (Kyle 2026-11-26): an office
+ * person texts a lead or a customer by their phone on file, whether or not the lead came from the website form or became an account. Goes through
+ * the ONE sender (services/hubSend.ts); STOP is the only reason it is refused. A text that does not go is still recorded in the conversation,
+ * as "Not texted" with its reason, and answers 409 with that reason. The AI admin's session sends the same text through the one agent send.
+ */
+communicationsRouter.post("/communications/text", asyncHandler(async (req, res) => {
+  const parsed = textBody.parse(req.body ?? {});
+  const reader = readerFor(req);
+  if (!reader) {
+    res.status(403).json({ error: "Sign in to send a text." });
+    return;
+  }
+  try {
+    // The text is filed in the customer's conversation (a lead's own before it is an account). A job's text goes to the job's customer, tagged with the job.
+    let thread;
+    if (parsed.target === "job") {
+      const visit = await prisma.visit.findUnique({ where: { id: parsed.id }, select: { customerId: true } });
+      if (!visit) throw new HubError("Job not found", 404);
+      thread = await ensureThreadFor({ customerId: visit.customerId });
+    } else {
+      thread = await ensureThreadFor(parsed.target === "lead" ? { leadId: parsed.id } : { customerId: parsed.id });
+    }
+    const visitId = parsed.target === "job" ? parsed.id : null;
+    const clientMessageId = parsed.clientMessageId ?? null;
+    let out: { message: { id: string }; sent: boolean; notSentReason: string | null };
+    if (reader.kind === "ai-admin") {
+      out = await createDraftMessage(reader, { threadId: thread.id, channel: "sms", category: OFFICE_TEXT_CATEGORY, body: parsed.body, visitId, clientMessageId });
+    } else {
+      out = await sendOfficeText(reader, { threadId: thread.id, body: parsed.body, visitId, clientMessageId });
+    }
+    if (!out.sent) {
+      res.status(409).json({ error: out.notSentReason ?? "The text was not sent.", sent: false, messageId: out.message.id });
+      return;
+    }
+    res.json({ sent: true, messageId: out.message.id });
+  } catch (err) {
+    if (err instanceof HubError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 }));

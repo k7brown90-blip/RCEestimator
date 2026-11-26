@@ -38,50 +38,54 @@ function getConfig(): TwilioConfig | null {
 }
 
 /**
- * Consent gate for a recipient phone number.
+ * The STOP gate for a recipient phone number. (Kyle 2026-11-26: "REMOVE THE SMS CONSENT GATE COMPLETELY ... Keep STOP handling
+ * only: if a person replies STOP, mark them opted out and stop texting them. That is the ONLY reason a text should ever be blocked.")
  *
- * The website's SMS consent checkbox is the ONLY opt-in channel we tell
- * customers (and Twilio's A2P reviewers) about — there is no verbal opt-in
- * flow anywhere in the call system, so the code must not behave as if there
- * were one. A phone number that matches a known Lead or Customer is therefore
- * blocked unless that record's `smsConsent` is explicitly `true`; `false` and
- * `null` ("never asked") are both treated as "not opted in."
+ * The Twilio number is used only to schedule, reschedule and confirm appointments with people who contacted Red Cedar first, so no
+ * consent checkbox is needed. `smsConsent` on a Customer or Lead now has ONE meaning: `false` = the person replied STOP
+ * (routes/inboundSms.ts writes it, and writes `true` on START); `null` and `true` both mean the person may be texted.
  *
- * A phone number with NO matching Lead/Customer record at all (e.g. a
- * technician's number, dispatched via the same Twilio line) is not a consumer
- * consent scenario and is left alone — this function only governs sends to
- * people in the CRM.
+ * A phone number whose LATEST logged STOP/START reply (InboundMessage) is a STOP is "stopped" even if no row says so (a lead created after the STOP). A phone number that matches ANY known Lead or Customer whose `smsConsent` is `false` is "stopped" (a STOP belongs to the person, not
+ * to one row, so one stopped row is enough). A number that matches a record and none of them is stopped is "ok". A phone number with NO
+ * matching Lead/Customer record at all (e.g. a technician's number, dispatched via the same Twilio line) is "unknown_number" and is left
+ * alone here; the hub's send function refuses it outside the 36-hour reply window (services/hubSend.ts).
  *
- * Matching is done on normalized last-10-digits in JS rather than a SQL
- * `contains`, because stored formats vary ("+16155550101" vs
- * "(615) 555-0101") and a punctuated row would slip past a digits-only
- * substring match. The Lead/Customer tables are small, so the full scan is cheap.
- *
- * What the CRM knows about a recipient's agreement to texts: "yes" (the matching record's smsConsent is
- * true), "no" (a record matches and it is false or never asked), or "unknown_number" (no Lead or Customer
- * matches). Exported so the hub's send function (services/hubSend.ts) asks the SAME question this gate
- * does instead of re-reading the consent columns itself.
+ * Matching is done on normalized last-10-digits in JS rather than a SQL `contains`, because stored formats vary ("+16155550101" vs
+ * "(615) 555-0101") and a punctuated row would slip past a digits-only substring match. The Lead/Customer tables are small, so the
+ * full scan is cheap. Exported so the hub's send function asks the SAME question this gate does instead of re-reading the column itself.
  */
-export async function smsConsentFor(to: string): Promise<"yes" | "no" | "unknown_number"> {
+export async function smsRecipientStatus(to: string): Promise<"ok" | "stopped" | "unknown_number"> {
   const toDigits = to.replace(/\D/g, "").slice(-10);
   if (toDigits.length < 10) return "unknown_number";
 
-  const [customers, leads] = await Promise.all([
+  const [customers, leads, optKeywords] = await Promise.all([
     prisma.customer.findMany({ where: { phone: { not: null } }, select: { phone: true, smsConsent: true } }),
     prisma.lead.findMany({ where: { phone: { not: null } }, select: { phone: true, smsConsent: true } }),
+    // The log of STOP / START replies (routes/inboundSms.ts). A STOP from a number that was on no record when it arrived, or whose
+    // record was later deleted, sets no row to false; this log is the only place it lives, so it is read here too (the same rule the
+    // 20261126100000_sms_stop_only migration uses: the LATEST keyword for the number decides).
+    prisma.inboundMessage.findMany({
+      where: { handledAs: { in: ["opt_out", "opt_in"] } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { fromPhone: true, handledAs: true },
+    }),
   ]);
 
-  const matched = [...customers, ...leads].find((r) => {
+  // A latest STOP for this number blocks it whatever the rows say, including a Lead or Customer created AFTER the STOP.
+  const latestKeyword = optKeywords.find((m) => m.fromPhone.replace(/D/g, "").slice(-10) === toDigits);
+  if (latestKeyword?.handledAs === "opt_out") return "stopped";
+
+  const matched = [...customers, ...leads].filter((r) => {
     const digits = (r.phone ?? "").replace(/\D/g, "");
     return digits.length >= 10 && digits.slice(-10) === toDigits;
   });
 
-  if (!matched) return "unknown_number"; // not a known consumer contact — not gated here
-  return matched.smsConsent === true ? "yes" : "no";
+  if (matched.length === 0) return "unknown_number"; // not a known contact - not gated here
+  return matched.some((r) => r.smsConsent === false) ? "stopped" : "ok";
 }
 
-export async function isBlockedByConsent(to: string): Promise<boolean> {
-  return (await smsConsentFor(to)) === "no";
+export async function isStopped(to: string): Promise<boolean> {
+  return (await smsRecipientStatus(to)) === "stopped";
 }
 
 /**
@@ -119,7 +123,6 @@ export interface SmsMeta {
 }
 
 export interface SendSmsOptions extends SmsMeta {
-  bypassConsentCheck?: boolean;
   statusCallback?: string;
 }
 
@@ -142,9 +145,9 @@ export interface SmsSent {
  *   1. the class and send type must be present and agree (a text with neither is refused and logged);
  *   2. marketing is refused (no marketing opt-in exists yet);
  *   3. an INTERNAL text goes only to Kyle, the operator alert number or an active technician (ruling A);
- *   4. a customer-class text keeps the consent gate: a recipient matching a known Lead or Customer whose
- *      `smsConsent` is not `true` is skipped (default-deny; a lookup that fails also blocks). It is
- *      skipped for `bypassConsentCheck`, which is for direct replies to a message the recipient just sent;
+ *   4. a customer-class text keeps ONE gate, STOP (Kyle 2026-11-26): a recipient matching a known Lead or Customer that replied STOP
+ *      (`smsConsent === false`) is skipped; a lookup that fails also blocks. Nothing else about consent is asked: a lead or customer
+ *      who was never asked is textable. There is NO bypass: a direct reply to a text the person just sent is checked too (Kyle 2026-11-26: STOP is the only reason a text is blocked, and it always is);
  *   5. the one opt-out question (smsBlockReason, a stub until step 6);
  *   6. the ONE composer (shared/sms/compose.ts) writes the header and the footer; a body that already
  *      carries either is refused for the two customer classes.
@@ -206,20 +209,17 @@ export async function sendSms(
   if (opts.messageClass === "marketing") return refuse("marketing_not_opted_in", "Red Cedar never sends marketing by text");
 
   if (opts.messageClass === "internal") {
-    // Ruling A: an internal text skips the consent gate and the footer, so it may only go to the people
+    // Ruling A: an internal text skips the STOP gate and the footer, so it may only go to the people
     // who work here. Anyone else (a customer) is refused as internal.
     if (!(await isInternalSmsNumber(to).catch(() => false))) return refuse("internal_not_allowed", "Internal SMS to a number that is not Kyle, the alert number or a technician");
   } else {
-    if (!opts.bypassConsentCheck) {
-      // On a failed lookup, err on the side of NOT texting — a skipped
-      // confirmation is recoverable (Kyle calls); a send to someone who hasn't
-      // opted in is the compliance failure this gate exists to prevent.
-      const blocked = await isBlockedByConsent(to).catch((err) => {
-        console.error("[Twilio] Consent lookup failed — blocking send to", to, err);
-        return true;
-      });
-      if (blocked) return refuse("no_sms_consent", "Recipient has not opted in to SMS");
-    }
+    // On a failed lookup, err on the side of NOT texting: a skipped text is recoverable (Kyle calls); a text to someone who
+    // replied STOP is the failure this gate exists to prevent.
+    const stopped = await isStopped(to).catch((err) => {
+      console.error("[Twilio] STOP lookup failed - blocking send to", to, err);
+      return true;
+    });
+    if (stopped) return refuse("replied_stop", "Recipient replied STOP");
     const optedOut = await smsBlockReason(to).catch(() => null);
     if (optedOut) return refuse(isSendBlockReason(optedOut) ? optedOut : "opted_out", "Recipient may not be texted");
   }

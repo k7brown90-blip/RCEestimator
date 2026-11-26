@@ -304,7 +304,8 @@ describe("update_work_order", () => {
     expect(chat.lead!.smsConsent).toBeNull(); // never inferred
   });
 
-  it("records smsConsent only from a boolean the website sent", async () => {
+  // Kyle 2026-11-26: only a ticked box (true) is recorded; false is no longer written from the website, because false now means 'replied STOP'.
+  it("records smsConsent only from a TRUE the website sent", async () => {
     const { token, lead } = await chatWithLead();
     expect(lead.smsConsent).toBeNull();
 
@@ -317,12 +318,18 @@ describe("update_work_order", () => {
     expect((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).smsConsent).toBe(true);
   });
 
-  it("creates the Lead with the consent that arrived on the same message", async () => {
+  it("creates the Lead with a ticked box as true, and an UNTICKED box (false) as null - never false (Kyle 2026-11-26)", async () => {
     const { body } = await start();
     script(call("update_work_order", { name: `${TAG} Consent`, phone: "615-555-0111" }), say("Thanks."));
     await send(body.token, "Consent, 615-555-0111", { smsConsent: false });
     const chat = await prisma.bookingChat.findUniqueOrThrow({ where: { token: body.token }, include: { lead: true } });
-    expect(chat.lead!.smsConsent).toBe(false);
+    expect(chat.lead!.smsConsent).toBeNull();
+
+    const ticked = await start();
+    script(call("update_work_order", { name: `${TAG} Ticked`, phone: "615-555-0112" }), say("Thanks."));
+    await send(ticked.body.token, "Ticked, 615-555-0112", { smsConsent: true });
+    const chat2 = await prisma.bookingChat.findUniqueOrThrow({ where: { token: ticked.body.token }, include: { lead: true } });
+    expect(chat2.lead!.smsConsent).toBe(true);
   });
 
   it("keeps concerns as added, drops a photo id that is not this lead's, keeps one that is", async () => {

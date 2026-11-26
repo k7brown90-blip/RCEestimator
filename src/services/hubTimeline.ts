@@ -17,7 +17,10 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/prisma";
 import { parseJsonArrayLength } from "../lib/json";
-import { HubError, findVisibleThread, maskedRecipient, unreadCounts, type HubReader } from "./hub";
+import { HubError, findVisibleThread, last10, maskedRecipient, unreadCounts, type HubReader } from "./hub";
+import { smsRecipientStatus } from "./twilio";
+import { twilioSendEnabled } from "./automationGate";
+import { SEND_BLOCK_REASONS } from "../../shared/hub/sendBlocks";
 import type {
   TimelineEmail, TimelineEntry, TimelineMessage, TimelineNote, TimelineResponse,
 } from "../../shared/hub/views";
@@ -78,30 +81,36 @@ export async function buildTimeline(
   let visitId: string | null = null;
   let propertyId: string | null = null;
   let name: string | null = null;
+  /** The phone a text from this record would go to (the account's, or the lead's before it is an account). */
+  let phone: string | null = null;
 
   if ("customerId" in target) {
-    const c = await db.customer.findUnique({ where: { id: target.customerId }, select: { id: true, name: true } });
+    const c = await db.customer.findUnique({ where: { id: target.customerId }, select: { id: true, name: true, phone: true } });
     if (!c) throw new HubError("Account not found", 404);
     customerId = c.id;
     name = c.name;
+    phone = c.phone;
   } else if ("leadId" in target) {
-    const lead = await db.lead.findUnique({ where: { id: target.leadId }, select: { id: true, name: true, customerId: true } });
+    const lead = await db.lead.findUnique({ where: { id: target.leadId }, select: { id: true, name: true, phone: true, customerId: true } });
     if (!lead) throw new HubError("Lead not found", 404);
     if (lead.customerId) {
       // A lead that became an account carries the account's whole conversation (its own emails are on it).
       customerId = lead.customerId;
-      const c = await db.customer.findUnique({ where: { id: lead.customerId }, select: { name: true } });
+      const c = await db.customer.findUnique({ where: { id: lead.customerId }, select: { name: true, phone: true } });
       name = c?.name ?? lead.name;
+      phone = c?.phone ?? null;
     } else {
       leadOnlyId = lead.id;
       name = lead.name;
+      phone = lead.phone;
     }
   } else if ("visitId" in target) {
-    const v = await db.visit.findUnique({ where: { id: target.visitId }, select: { id: true, customerId: true, customer: { select: { name: true } } } });
+    const v = await db.visit.findUnique({ where: { id: target.visitId }, select: { id: true, customerId: true, customer: { select: { name: true, phone: true } } } });
     if (!v) throw new HubError("Job not found", 404);
     customerId = v.customerId;
     visitId = v.id;
     name = v.customer.name;
+    phone = v.customer.phone;
   } else {
     const p = await db.property.findUnique({ where: { id: target.propertyId }, select: { id: true, customerId: true, customer: { select: { name: true } } } });
     if (!p) throw new HubError("Address not found", 404);
@@ -236,11 +245,23 @@ export async function buildTimeline(
     }
   }
 
+  // ── 7. may a text go to this record? (the Conversation's "Text the customer" box) ───────────────
+  // Kyle 2026-11-26: a lead or customer with a phone can be texted, whether or not it came from the website form or became an account.
+  // The only things that grey the box are no phone on file and a STOP reply. (The Property page is read-only and has no box.)
+  let textBlock: string | null = null;
+  if (propertyId === null) {
+    if (!last10(phone)) textBlock = SEND_BLOCK_REASONS.no_phone;
+    else if ((await smsRecipientStatus(phone as string).catch(() => "ok" as const)) === "stopped") textBlock = SEND_BLOCK_REASONS.replied_stop;
+    // Greyed with the reason BEFORE the click (CLAUDE.md click-through rule 5), not a 409 and a held row after Send.
+    else if (!twilioSendEnabled("hubSms")) textBlock = SEND_BLOCK_REASONS.texting_off;
+  }
+
   return {
     scope: { customerId, leadId: leadOnlyId ?? ("leadId" in target ? target.leadId : null), visitId, propertyId, name },
     readOnly: propertyId !== null,
     entries,
     truncated,
     crewThread,
+    textBlock,
   };
 }

@@ -541,10 +541,10 @@ app.post("/leads", asyncHandler(async (req, res) => {
       contactPreference: body.contactPreference?.trim() || null,
       leadStatus: body.leadStatus?.trim() || "new",
       bestTimeToReach: body.bestTimeToReach?.trim() || null,
-      // Only an explicit boolean is recorded — anything else stays null. Null
-      // is NOT the same as consent: the send gate in services/twilio.ts only
-      // allows sends to a known Lead/Customer when this is exactly `true`.
-      smsConsent: typeof body.smsConsent === "boolean" ? body.smsConsent : null,
+      // Kyle 2026-11-26: true when the website form's box was ticked, otherwise null. NEVER false here: an
+      // unticked box is not a refusal. `false` now means one thing only - the person replied STOP
+      // (routes/inboundSms.ts) - and it is the only thing that blocks a text (services/twilio.ts).
+      smsConsent: body.smsConsent === true ? true : null,
       customerId: body.customerId?.trim() || null,
       propertyId: body.propertyId?.trim() || null,
     },
@@ -574,7 +574,7 @@ app.post("/leads", asyncHandler(async (req, res) => {
   // is granted, before any other customer-facing text. Wording is locked and
   // must match what's declared to Twilio's A2P campaign; see
   // services/notifications.ts webOptInConfirmation(). Goes through the normal
-  // sendSms() gate (not bypassed) since smsConsent is already true here.
+  // sendSms() STOP check (not bypassed). Left as it was (Kyle 2026-11-26 plan: recorded, not changed).
   //
   // GATED (manual-first, 2026-08-11): both of these fire on the customer's own form
   // submission with no RCE human in the loop, which makes them unattended customer sends.

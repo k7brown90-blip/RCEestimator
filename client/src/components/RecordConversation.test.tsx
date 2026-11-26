@@ -171,11 +171,21 @@ describe("reading the conversation", () => {
     expect(screen.queryByTestId("ai-sent-line")).toBeNull();
   });
 
-  it("a blocked line says why in words (no consent is 'never agreed', not 'opted out')", async () => {
-    account([messageEntry({ id: "m-c", status: "blocked", channel: "sms", direction: "outbound", authorType: "system", authorDisplay: "System", body: "Job scheduled", error: "no_sms_consent", toMasked: "(615) ***-0101", messageClass: "transactional" })]);
-    expect(await screen.findByText(sendBlockText("no_sms_consent"))).toBeInTheDocument();
-    expect(screen.queryByText("no_sms_consent")).toBeNull();
+  it("a blocked line says why in words (the STOP block reads 'replied STOP', and never claims consent was missing)", async () => {
+    account([messageEntry({ id: "m-c", status: "blocked", channel: "sms", direction: "outbound", authorType: "system", authorDisplay: "System", body: "Job scheduled", error: "replied_stop", toMasked: "(615) ***-0101", messageClass: "transactional" })]);
+    expect(await screen.findByText(sendBlockText("replied_stop"))).toBeInTheDocument();
+    expect(sendBlockText("replied_stop")).toMatch(/replied STOP/);
+    expect(sendBlockText("replied_stop")).not.toMatch(/agreed/i);
+    expect(screen.queryByText("replied_stop")).toBeNull();
     expect(screen.queryByTitle(/opted out/i)).toBeNull();
+  });
+
+  // Kyle 2026-11-26 (review): rows blocked under the removed consent rule carry the old code. They must not claim the person replied STOP.
+  it("an old line blocked under the removed consent rule does NOT say the person replied STOP", async () => {
+    account([messageEntry({ id: "m-old", status: "blocked", channel: "sms", direction: "outbound", authorType: "system", authorDisplay: "System", body: "Reminder", error: "no_sms_consent", toMasked: "(615) ***-0101", messageClass: "transactional" })]);
+    expect(await screen.findByText(sendBlockText("no_sms_consent"))).toBeInTheDocument();
+    expect(sendBlockText("no_sms_consent")).not.toMatch(/STOP/);
+    expect(sendBlockText("no_sms_consent")).toMatch(/old consent rule/i);
   });
 
   it("an automatic text names who it went to, masked, so a staff alert never reads as a text the customer got", async () => {
@@ -405,5 +415,81 @@ describe("the email composer and the other surfaces", () => {
     expect(within(section).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(within(section).getByRole("link", { name: "Open the account's conversation" })).toHaveAttribute("href", "/accounts/cust-1");
     expect(api.hubTimeline).toHaveBeenCalledWith({ propertyId: "prop-1" });
+  });
+});
+
+// Kyle 2026-11-26 ("REMOVE THE SMS CONSENT GATE COMPLETELY ... Every lead and every customer with a phone number gets a working text box in
+// Conversation"): the "Text the customer" box on every record's Conversation. Only a STOP reply or no phone greys it.
+describe("the 'Text the customer' box", () => {
+  it("on an account with a phone it opens, takes words and sends them to the account (target account), then says Text sent.", async () => {
+    const send = vi.spyOn(api, "sendRecordText").mockResolvedValue({ sent: true, messageId: "m-9" });
+    account([]);
+    fireEvent.click(await screen.findByRole("button", { name: "Text the customer" }));
+    const box = screen.getByLabelText("Text message");
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.change(box, { target: { value: "  Running 15 minutes late.  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toMatchObject({ target: "account", id: "cust-1", body: "Running 15 minutes late." });
+    expect(await screen.findByText("Text sent.")).toBeInTheDocument();
+  });
+
+  it("a lead that is not an account yet, with smsConsent null and a phone, can be texted (the old consent gate would have blocked it)", async () => {
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([], { scope: { customerId: null, leadId: "lead-1", visitId: null, propertyId: null, name: "New Lead" }, textBlock: null }));
+    const send = vi.spyOn(api, "sendRecordText").mockResolvedValue({ sent: true, messageId: "m-9" });
+    renderWithProviders(<RecordConversation surface="lead" record={{ key: "leadId", id: "lead-1" }} accountId={null} />, { route: "/leads?lead=lead-1" });
+    const open = await screen.findByRole("button", { name: "Text the customer" });
+    expect(open).toBeEnabled();
+    fireEvent.click(open);
+    fireEvent.change(screen.getByLabelText("Text message"), { target: { value: "Can we come Thursday?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toMatchObject({ target: "lead", id: "lead-1", body: "Can we come Thursday?" });
+  });
+
+  it("on a job it sends with target job", async () => {
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([], { textBlock: null }));
+    const send = vi.spyOn(api, "sendRecordText").mockResolvedValue({ sent: true, messageId: "m-9" });
+    renderWithProviders(<RecordConversation surface="job" record={{ key: "visitId", id: "visit-1" }} accountId="cust-1" visitId="visit-1" />, { route: "/jobs" });
+    fireEvent.click(await screen.findByRole("button", { name: "Text the customer" }));
+    fireEvent.change(screen.getByLabelText("Text message"), { target: { value: "On our way." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0][0]).toMatchObject({ target: "job", id: "visit-1" });
+  });
+
+  it("is greyed WITH the reason on screen only for a STOP reply or no phone", async () => {
+    account([], { textBlock: "This person replied STOP, so no texts will be sent to them. Call or email instead." });
+    const button = await screen.findByRole("button", { name: "Text the customer" });
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(screen.getByText(/replied STOP/)).toBeInTheDocument();
+    expect(button).toHaveAttribute("title", expect.stringMatching(/replied STOP/));
+  });
+
+  it("shows why a text did not go and leaves the words in the box, so nothing typed is lost", async () => {
+    vi.spyOn(api, "sendRecordText").mockRejectedValue(new Error("Not sent: texting is turned off."));
+    account([]);
+    fireEvent.click(await screen.findByRole("button", { name: "Text the customer" }));
+    fireEvent.change(screen.getByLabelText("Text message"), { target: { value: "Hello there" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not sent: texting is turned off.");
+    expect((screen.getByLabelText("Text message") as HTMLTextAreaElement).value).toBe("Hello there");
+  });
+
+  it("Cancel closes the box with nothing sent", async () => {
+    const send = vi.spyOn(api, "sendRecordText").mockResolvedValue({ sent: true, messageId: "m-9" });
+    account([]);
+    fireEvent.click(await screen.findByRole("button", { name: "Text the customer" }));
+    fireEvent.change(screen.getByLabelText("Text message"), { target: { value: "Never mind" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Text message")).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("is not on the read-only Property page", async () => {
+    vi.spyOn(api, "hubTimeline").mockResolvedValue(timeline([], { readOnly: true }));
+    renderWithProviders(<RecordConversation surface="property" record={{ key: "propertyId", id: "prop-1" }} accountId="cust-1" />, { route: "/properties/prop-1" });
+    await screen.findByRole("region", { name: "Conversation" });
+    expect(screen.queryByRole("button", { name: "Text the customer" })).toBeNull();
   });
 });

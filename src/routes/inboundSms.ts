@@ -143,7 +143,7 @@ async function captureReceipts(
     if (twilioSendEnabled("inboundAcks")) {
       const ack = `Receipt${captured === 1 ? "" : "s"} logged: ${summaries.join("; ")}. ${noteText ? `Note: "${noteText}". ` : ""}Review & confirm in the CRM.`;
       // Reply to the sender's own MMS — Kyle or a tech, never a campaign message.
-      await sendSms(senderPhone, ack, { bypassConsentCheck: true, messageClass: "internal", category: "tech_notice", hub: technicianId ? { technicianId } : undefined }).catch(() => {});
+      await sendSms(senderPhone, ack, { messageClass: "internal", category: "tech_notice", hub: technicianId ? { technicianId } : undefined }).catch(() => {});
     } else {
       logTwilioSendSkipped("inboundAcks", `${captured} receipt(s) captured and waiting at pending_review in the CRM; sender not acknowledged by text.`);
     }
@@ -185,10 +185,11 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
 
   // ── Opt-out / opt-in keywords ──────────────────────────────────────
   // Twilio already blocks delivery after STOP at the carrier level (and sends
-  // the mandated confirmation itself — no reply here). Recording it keeps our
-  // consent records true, which is what the send gate in services/twilio.ts
-  // reads and what A2P registration attests to. Applied to every Customer and
-  // Lead sharing the number — consent belongs to the person, not the row.
+  // the mandated confirmation itself — no reply here). Recording it (smsConsent
+  // false = replied STOP, true = replied START) is what the send gate in
+  // services/twilio.ts reads: STOP is the ONLY reason a text to a lead or
+  // customer is blocked (Kyle 2026-11-26). Applied to every Customer and
+  // Lead sharing the number — a STOP belongs to the person, not the row.
   const optKeyword = /^(STOP|STOPALL|UNSUBSCRIBE|QUIT|END|REVOKE)$/i.test(text)
     ? false
     : /^(START|UNSTOP|YES\s+SUBSCRIBE)$/i.test(text)
@@ -252,7 +253,7 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
       // The note is already written to the visit above — the ack text is the gated part.
       if (twilioSendEnabled("technicianSends")) {
         await sendSms(from, `Noted on the ${assignment.visit.customer.name} job.`, {
-          bypassConsentCheck: true, messageClass: "internal", category: "tech_notice", hub: { technicianId: tech.id, visitId: assignment.visitId },
+          messageClass: "internal", category: "tech_notice", hub: { technicianId: tech.id, visitId: assignment.visitId },
         }).catch(() => {});
       } else {
         logTwilioSendSkipped("technicianSends", `Note from ${tech.name} saved on visit ${assignment.visitId}; tech not acknowledged by text.`);
@@ -294,10 +295,10 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
         const replyCategory: Record<ConfirmationAction, string> = {
           confirm: "confirmation_reply", reschedule: "reschedule_reply", cancel: "cancel_request_reply",
         };
-        // Direct reply to a message they just sent — answering an inbound text
-        // is permitted even for a recipient whose broadcast consent is false.
+        // Direct reply to a message they just sent. The STOP check still applies (Kyle 2026-11-26: STOP is the only block, and it
+        // always holds): a person who replied STOP and later texts C or R gets the visit updated but no auto-reply.
         //
-        // GATED (manual-first, 2026-08-11): consent is not the question here — automation is.
+        // GATED (manual-first, 2026-08-11): the STOP check is not the question here — automation is.
         // The customer's action still lands in the CRM and Kyle is still forwarded the text
         // below, so nothing is lost; he answers it himself rather than the system answering
         // for him.
@@ -306,7 +307,6 @@ inboundSmsRouter.post("/sms/inbound", requireTwilioSignature("POST /sms/inbound"
         // class 2 governs "may a Twilio text leave at all". Either one closed means no reply.
         if (customerSendsEnabled("inboundAutoReply") && twilioSendEnabled("customerLifecycleSms")) {
           await sendSms(from, replies[outcome.action], {
-            bypassConsentCheck: true,
             messageClass: "transactional",
             category: replyCategory[outcome.action],
             when: upcoming.scheduledStart

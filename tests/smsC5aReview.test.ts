@@ -201,7 +201,7 @@ describe("a system text is never an approval card", () => {
     await expect(approvalCardFor(OWNER, blocked.id)).rejects.toMatchObject({ status: 404 });
     // The line itself is still in the conversation, with its reason.
     const tl = await buildTimeline(OWNER, { customerId: a.customer.id });
-    expect(JSON.stringify(tl)).toContain("no_sms_consent");
+    expect(JSON.stringify(tl)).toContain("replied_stop");
   });
 });
 

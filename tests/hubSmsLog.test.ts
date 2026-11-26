@@ -204,17 +204,19 @@ describe("a refused text is written down, once", () => {
     return { lines, audits };
   }
 
-  it("no consent: a 'blocked' line and ONE send_blocked audit row (reason, class, category, purpose, last four, ids), and no Twilio call", async () => {
-    const a = await account({ smsConsent: null });
+  // Kyle 2026-11-26: this used to use smsConsent null ("no consent"). Null is textable now; the one refusal is a STOP (smsConsent false), which keeps
+  // the new code replied_stop; no_sms_consent remains only on rows written before 2026-11-26.
+  it("a STOP: a 'blocked' line and ONE send_blocked audit row (reason, class, category, purpose, last four, ids), and no Twilio call", async () => {
+    const a = await account({ smsConsent: false });
     const result = await sendSms(a.to, "Reminder.", { ...TR("visit_reminder"), hub: { customerId: a.customer.id, visitId: a.visit.id } });
     expect(result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     const { lines, audits } = await blockedRows(a.customer.id);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ status: "blocked", error: "no_sms_consent", visitId: a.visit.id, sentText: null, authorType: "system" });
+    expect(lines[0]).toMatchObject({ status: "blocked", error: "replied_stop", visitId: a.visit.id, sentText: null, authorType: "system" });
     expect(audits).toHaveLength(1);
     expect(JSON.parse(audits[0]!.detailsJson!)).toMatchObject({
-      reason: "no_sms_consent", messageClass: "transactional", category: "visit_reminder", purposeKey: "appointment_reminder", channel: "sms", toLast4: a.phone10.slice(-4),
+      reason: "replied_stop", messageClass: "transactional", category: "visit_reminder", purposeKey: "appointment_reminder", channel: "sms", toLast4: a.phone10.slice(-4),
       ids: { customerId: a.customer.id, visitId: a.visit.id },
     });
     expect(audits[0]!.detailsJson).not.toContain(a.phone10);

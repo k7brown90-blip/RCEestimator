@@ -104,7 +104,6 @@ export async function sendAlert(event: AlertEvent): Promise<AlertResult> {
 
   const body = formatBody(event);
   const result = await sendSms(operatorNumber(), body, {
-    bypassConsentCheck: true,
     statusCallback: statusCallbackUrl(),
     // To the operator alert number (or Kyle): an internal text, which only gets the "Red Cedar Electric:" prefix.
     messageClass: "internal",

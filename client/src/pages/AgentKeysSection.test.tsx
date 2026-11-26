@@ -138,7 +138,8 @@ describe("Allow writes (W1: agent writes switched on)", () => {
     expect(confirm).toHaveBeenCalledWith(
       'Let "Admin Agent" post in Messages? Its posts in the Team, group and crew chats are published at once when "Team posts publish immediately" is ticked for it '
       + '(and wait for your Approve when it is not). Its emails and texts to customers, and its replies in a Training thread, go out as soon as it posts them: '
-      + 'nobody approves them first. A text still stops for a customer who opted out or has not agreed to texts, and an email for an address that unsubscribed. '
+      // Kyle 2026-11-26: STOP is the only reason a text is refused (plan remove-sms-consent-gate).
+      + 'nobody approves them first. A text still stops for a customer who replied STOP, and an email for an address that unsubscribed. '
       + 'While Agent access is paused or off, nothing an AI wrote is published or sent. A price book change it proposes still waits for your Approve.',
     );
     expect(update).not.toHaveBeenCalled();

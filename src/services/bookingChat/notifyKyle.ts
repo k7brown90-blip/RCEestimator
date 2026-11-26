@@ -71,7 +71,8 @@ export async function buildKyleEmail(chatId: string): Promise<{ subject: string;
   const prep = parseJsonStringArray(chat.prepAreasJson);
   lines.push(`Prep areas: ${prep.length ? prep.join("; ") : "(none)"}`);
   lines.push(`Photos: ${photos.length} (panel photo: ${panelCount > 0 ? "yes" : "not provided"})`);
-  lines.push(`OK to text: ${lead.smsConsent === true ? "yes" : lead.smsConsent === false ? "no" : "not asked"}`);
+  // Kyle 2026-11-26: texting needs no consent; the only "no" is a person who replied STOP.
+  lines.push(`OK to text: ${lead.smsConsent === false ? "no (replied STOP)" : "yes"}`);
   lines.push(`Source: ${chat.platform ?? "unknown"}${chat.srcParam ? ` (src=${chat.srcParam})` : ""}`);
   lines.push("");
   lines.push(`Lead id: ${lead.id}`);

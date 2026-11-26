@@ -15,11 +15,12 @@
  *                        read-only, only what is tagged to jobs at this address, with a way to the account.
  *
  * What it shows, newest first: call notes (Edit / Delete as before, "edited" marker), emails sent from
- * any door with their delivery status, the hub's own messages (an AI draft waiting has "Review draft",
+ * any door with their delivery status, texts to and from the customer, the hub's own messages (an AI draft waiting has "Review draft",
  * which opens the Thread drawer; on the account, lead and job it IS the ApprovalCard right there - Approve,
- * Edit and Reject - so a draft is decided where the customer's own record is), and one line for a website chat. Its two buttons are "Add call note"
- * and "Email the customer" — the latter is the host's SendEmailPanel, passed in, so there is still
- * exactly one email composer and it still lists nothing of its own here.
+ * Edit and Reject - so a draft is decided where the customer's own record is), and one line for a website chat. Its buttons are "Add call note",
+ * "Email the customer" — the host's SendEmailPanel, passed in, so there is still exactly one email composer
+ * and it still lists nothing of its own here — and "Text the customer" (SendTextPanel, Kyle 2026-11-26: every lead and
+ * every customer with a phone gets a working text box, consent or no consent; only a STOP reply or no phone greys it).
  *
  * Standing rule: nothing here is permanent. A note edits and deletes on its row; a message carries
  * the exit its own state allows (a draft is rejected at approval, a sent one is history).
@@ -38,6 +39,7 @@ import type { TimelineEntry, TimelineMessage } from "../../../shared/hub/views";
 import { DeliveryChip } from "./DeliveryChip";
 import { AddCallNoteForm, CallNoteRow, JOB_SURFACE_LIMIT } from "./ConversationNotes";
 import { ApprovalCard, isOpenCard } from "./ApprovalCard";
+import { SendTextPanel, type TextTarget } from "./SendTextPanel";
 
 export type ConversationSurface = "account" | "lead" | "job" | "property";
 
@@ -157,6 +159,8 @@ export function RecordConversation({
     property: "What was said and sent about the jobs at this address. Read-only here; the account holds the whole conversation.",
   };
   const noNoteReason = accountId ? null : "Call notes are kept on the account. Turn this lead into an account to add one.";
+  // "Text the customer" goes to the record this Conversation is open on (a lead's text is filed on its account once it has one).
+  const textTarget: TextTarget | null = record.key === "leadId" ? "lead" : record.key === "customerId" ? "account" : record.key === "visitId" ? "job" : null;
 
   return (
     <Frame className={frameClass} role={isPage ? undefined : "group"} aria-label="Conversation">
@@ -193,6 +197,7 @@ export function RecordConversation({
               Email the customer
             </button>
           ) : null}
+          {textTarget && <SendTextPanel target={textTarget} id={record.id} block={data?.textBlock ?? null} />}
           {surface === "job" && visitId && (
             <button
               type="button"

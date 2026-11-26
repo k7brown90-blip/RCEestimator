@@ -115,6 +115,11 @@ export interface TimelineResponse {
   truncated: boolean;
   /** The job's own crew thread, once one exists (visitId requests only). */
   crewThread: { id: string; unread: number } | null;
+  /**
+   * Why the "Text the customer" box is greyed here, in the sentence the screen shows; null when a text can be sent (the record has a
+   * phone and has not replied STOP). Kyle 2026-11-26: STOP is the only reason a person cannot be texted. Absent on an older answer = sendable.
+   */
+  textBlock?: string | null;
 }
 
 // ── the Messages page and the Thread drawer (U3) ─────────────────────────────────────────────────

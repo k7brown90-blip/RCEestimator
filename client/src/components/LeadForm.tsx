@@ -4,9 +4,8 @@
  * user finds and corrects or updates any information"). The page still renders it for
  * `/leads/new` and `/leads/:leadId/edit`; the drawer renders it `compact`.
  *
- * `Lead.smsConsent` is deliberately NOT a field here (PUNCHLIST E1): it is tri-state — `null`
- * means "never asked" and is what the A2P registration attests to — and a checkbox would
- * collapse it to `false`. The drawer shows it read-only; nothing in the CRM writes it.
+ * `Lead.smsConsent` is deliberately NOT a field here. Kyle 2026-11-26: texting needs no consent, and `false` now means one
+ * thing only, that the person replied STOP (routes/inboundSms.ts writes it). Nothing in the CRM form writes it, and no screen shows it.
  */
 
 import { useEffect, useState } from "react";

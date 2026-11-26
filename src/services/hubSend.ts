@@ -10,7 +10,7 @@
  *   in_app  marked posted (a drafted reply in a job, Team, Dev or Training thread).
  *   email   services/recordEmail.ts sendRecordMessage - the very function behind "Email the customer" - so
  *           the same pipe, ONE EmailDelivery row (linked to the message), the same recipient and CC rule.
- *   sms     the class guard, then the consent gate, then the SMS leg. The leg is the new TwilioSendLeg
+ *   sms     the class guard, then the STOP gate, then the SMS leg. The leg is the new TwilioSendLeg
  *           `hubSms` (env HUB_SMS_OUTBOUND_ENABLED). While it is off an approved text is HELD as approved
  *           with the error "SMS disabled" and nothing is sent to Twilio. The class guard runs BEFORE that
  *           hold, so a text that can never go out is refused at Approve (with a send_blocked audit row), not
@@ -18,11 +18,12 @@
  *             1. a message with no class is refused;
  *             2. marketing is ALWAYS refused in this build ("Red Cedar never sends marketing by text"), with one
  *                send_blocked row and the reason on the card - never held, so it cannot release later;
- *             3. transactional keeps the consent gate (services/twilio.ts smsConsentFor, the same question
- *                sendSms asks);
- *             4. the consent gate is bypassed ONLY for a transactional thread_reply within 36 hours of the
- *                customer's last inbound text (a number with no Lead or Customer is treated as never-asked,
- *                so it too can only be answered inside that window);
+ *             3. a number whose Lead or Customer replied STOP is refused, whatever the send type and however
+ *                recent their text (services/twilio.ts smsRecipientStatus, the same question sendSms asks).
+ *                Kyle 2026-11-26: STOP is the ONLY reason a text to a lead or customer is blocked; a person
+ *                who was never "asked" is textable;
+ *             4. a number with no Lead or Customer at all can only be answered: a transactional thread_reply
+ *                within 36 hours of that number's last inbound text (anything else is reply_window_closed);
  *             5. smsBlockReason(phone) is asked (a stub returning null until P2B-1, step 6);
  *             6. the "Sends as:" preview and the text that goes out come from the SAME composeSms call
  *                (shared/sms/compose.ts) with the SAME inputs: prepareSms composes the preview, and sendSms
@@ -49,7 +50,7 @@ import { logSystemEvent } from "./systemEvents";
 import { HubError, SYSTEM_ACTOR, bumpThreadForMessage, fanOutMessage, hubAudit, isFirstTextTo, last10 } from "./hub";
 import { announceDecision } from "./hubBus";
 import { sendRecordMessage, type RecordEmailTarget } from "./recordEmail";
-import { sendSms, smsConsentFor, type SendSmsOptions } from "./twilio";
+import { sendSms, smsRecipientStatus, type SendSmsOptions } from "./twilio";
 import { isInternalSmsNumber, smsBlockReason } from "./smsGuards";
 import { twilioSendEnabled } from "./automationGate";
 import { getSmsPurposeLabels } from "./ownerSettings";
@@ -116,8 +117,6 @@ export type SmsPrepared =
     /** E.164 number the text goes to. */
     to: string;
     toPhone10: string;
-    /** True only for a transactional thread_reply inside the 36-hour window. */
-    bypassConsent: boolean;
     /** The exact words that go out, and what they were composed from. */
     sentText: string;
     footerIncluded: boolean;
@@ -142,7 +141,7 @@ async function lastInboundText(db: Db, thread: HubThread, toPhone10: string): Pr
 
 /**
  * Everything a text needs decided before it can go, with no side effect: the class guard, the opt-out
- * question, the consent gate and the composed words. hubSend runs it at the moment of Approve; the card
+ * question, the STOP gate and the composed words. hubSend runs it at the moment of Approve; the card
  * runs the same function to print "Sends as:" and to grey Approve with the reason, so what is previewed
  * and what is checked cannot differ from what is sent.
  */
@@ -162,7 +161,6 @@ export async function prepareSms(message: HubMessage, thread: HubThread, db: Db,
   if (!toPhone10) return block("no_phone");
   const to = `+1${toPhone10}`;
 
-  let bypassConsent = false;
   if (cls === "internal") {
     if (!(await isInternalSmsNumber(to))) return block("internal_not_allowed");
   } else {
@@ -170,15 +168,14 @@ export async function prepareSms(message: HubMessage, thread: HubThread, db: Db,
     // 5. Has this number opted out of texts? (stub until step 6; the one answer, asked here and in sendSms.)
     const blocked = await smsBlockReason(to);
     if (blocked) return block(isSendBlockReason(blocked) ? blocked : "opted_out");
-    // 3 + 4. Transactional keeps the consent gate; only a reply within 36 hours of their own text goes round it.
-    const lastInbound = await lastInboundText(db, thread, toPhone10);
-    const inWindow = lastInbound !== null && claimedAt.getTime() - lastInbound.getTime() <= REPLY_WINDOW_MS;
-    bypassConsent = message.category === "thread_reply" && inWindow;
-    if (!bypassConsent) {
-      const consent = await smsConsentFor(to).catch(() => "no" as const);
-      if (consent === "no") return block("no_sms_consent");
-      // A number with no Lead or Customer is never-asked, not unrestricted: only the 36-hour reply may go.
-      if (consent === "unknown_number") return block("reply_window_closed");
+    // 3. STOP is the only block on a lead or customer (Kyle 2026-11-26); a lookup that fails refuses rather than risk a text to a STOP.
+    const status = await smsRecipientStatus(to).catch(() => "stopped" as const);
+    if (status === "stopped") return block("replied_stop");
+    // 4. A number with no Lead or Customer is never-asked, not unrestricted: only the 36-hour reply may go.
+    if (status === "unknown_number") {
+      const lastInbound = await lastInboundText(db, thread, toPhone10);
+      const inWindow = lastInbound !== null && claimedAt.getTime() - lastInbound.getTime() <= REPLY_WINDOW_MS;
+      if (!(message.category === "thread_reply" && inWindow)) return block("reply_window_closed");
     }
   }
 
@@ -194,7 +191,7 @@ export async function prepareSms(message: HubMessage, thread: HubThread, db: Db,
   });
   if (!composed.ok) return block(composed.reason);
   return {
-    ok: true, to, toPhone10, bypassConsent, sentText: composed.text, footerIncluded: composed.footerIncluded,
+    ok: true, to, toPhone10, sentText: composed.text, footerIncluded: composed.footerIncluded,
     headerAt, eventStart, eventEnd,
   };
 }
@@ -454,7 +451,6 @@ function textOptions(message: HubMessage, thread: HubThread, prepared: Extract<S
   return {
     messageClass: message.messageClass as MessageClass,
     category: message.category ?? "",
-    bypassConsentCheck: prepared.bypassConsent,
     when: { start: prepared.headerAt, end: prepared.eventEnd },
     hub: { customerId: thread.customerId, leadId: thread.leadId, visitId: thread.visitId, purposeKey: message.purposeKey, messageId: message.id },
   };
@@ -463,7 +459,7 @@ function textOptions(message: HubMessage, thread: HubThread, prepared: Extract<S
 async function sendText(db: PrismaClient, message: HubMessage, thread: HubThread, actor: SendActor, claimedAt: Date): Promise<SendResult> {
   const prepared = await prepareSms(message, thread, db, claimedAt);
   if (!prepared.ok) return (await settleBlocked(db, message, thread, prepared.reason, actor)) ?? movedOn(message.id);
-  // The leg comes AFTER the class guard, consent and composition: a text that can never go out is refused
+  // The leg comes AFTER the class guard, the STOP gate and composition: a text that can never go out is refused
   // now, not parked until texting is switched on.
   const common = { headerAt: prepared.headerAt, eventStart: prepared.eventStart, eventEnd: prepared.eventEnd, toPhone10: prepared.toPhone10 };
   // A rehearsal skips the provider and the texting switch alike: the row settles as the text that WOULD have

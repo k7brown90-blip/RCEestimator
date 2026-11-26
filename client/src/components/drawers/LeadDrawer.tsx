@@ -18,8 +18,9 @@
  * "Book on the Calendar" is replaced by a line saying so (one tool for one task), because a second
  * door would book a second event on top of the hold.
  *
- * `smsConsent` is shown as three words and never as a control (PUNCHLIST E1): `null` is "never
- * asked", the state the A2P registration attests to, and only `true` opens the SMS gate.
+ * Kyle 2026-11-26: the "SMS consent:" line is gone and nothing replaces it. Texting a lead needs no consent (the Conversation's "Text the
+ * customer" box works for any lead with a phone); `smsConsent === false` now only means the person replied STOP, and the Conversation
+ * says so on the greyed box.
  */
 
 import { useState } from "react";
@@ -60,12 +61,6 @@ function displayAddress(lead: Lead): string | null {
       .join(", ");
   }
   return lead.address ?? null;
-}
-
-function consentLabel(value: boolean | null | undefined): string {
-  if (value === true) return "yes — ticked on the website form";
-  if (value === false) return "declined — shown the box, left it unticked";
-  return "never asked";
 }
 
 export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void }) {
@@ -245,10 +240,6 @@ export function LeadDrawer({ id, onClose }: { id: string; onClose: () => void })
             {lead.status === "lost" && lead.lostReason && (
               <p>Lost — {lead.lostReason}{lead.lostNotes ? `: "${lead.lostNotes}"` : ""}</p>
             )}
-            <p className="text-xs" data-sms-consent={lead.smsConsent === true ? "true" : lead.smsConsent === false ? "false" : "null"}>
-              <span className="text-rce-soft">SMS consent:</span> {consentLabel(lead.smsConsent)}
-              <span className="text-rce-soft"> · read-only; the website form is the only opt-in channel</span>
-            </p>
             {lead.customerId && <p className="text-xs text-rce-accent">Linked to an existing account</p>}
           </div>
 

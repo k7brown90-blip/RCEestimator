@@ -10,7 +10,7 @@
  *   - an agent's customer EMAIL and TEXT are SENT when posted, by the one sender, authored by the key, with an audit row that says "sent
  *     directly" and nothing waiting in Messages -> Waiting for approval; a replay sends nothing again;
  *   - every guard still holds and the message is recorded as NOT SENT (status blocked, one send_blocked row, the agent told why, nothing queued):
- *     a customer who opted out or never agreed to texts; an address that unsubscribed; texting switched off (the env leg); Agent access paused or
+ *     a customer who replied STOP (Kyle 2026-11-26: the only block on a text; "never agreed" is no longer a block); an address that unsubscribed; texting switched off (the env leg); Agent access paused or
  *     off (the kill switch); the key's Allow writes off or the key revoked (at the gate, and again at the moment of sending);
  *   - the 500-a-day cap still refuses before anything is written;
  *   - what stays gated stays gated: a price book change card is never touched by the direct send or the key's Team-post publish; an older
@@ -230,18 +230,51 @@ describe("every guard still holds, and the refusal is recorded as NOT SENT (neve
     nothingWentOut();
   }
 
-  it("a customer who opted out of texts is refused: blocked, nothing sent, the reason told to the agent", async () => {
+  it("a customer who replied STOP is refused: blocked, nothing sent, the reason told to the agent", async () => {
     process.env[LEG] = "on";
     const k = await mint();
     const optedOut = await account({ smsConsent: false });
-    await expectRecordedNotSent(await post(k.secret, textBody(optedOut.id)), "no_sms_consent", /has not agreed to texts/);
+    await expectRecordedNotSent(await post(k.secret, textBody(optedOut.id)), "replied_stop", /replied STOP/);
   });
 
-  it("a customer who was never asked (no consent on file) is refused the same way", async () => {
+  // Kyle 2026-11-26: this case used to pin that a customer with no consent on file was refused ("has not agreed to texts"). There is no consent
+  // step now: a customer who was never asked is texted, and only a STOP blocks.
+  it("a customer who was never asked (no consent on file) is texted, and so is a lead - by id, with the Admin key", async () => {
     process.env[LEG] = "on";
     const k = await mint();
+    expect(k.id).toBeTruthy();
     const never = await account({ smsConsent: null });
-    await expectRecordedNotSent(await post(k.secret, textBody(never.id)), "no_sms_consent", /has not agreed to texts/);
+    const toCustomer = await post(k.secret, textBody(never.id));
+    expect(toCustomer.status, JSON.stringify(toCustomer.body)).toBe(201);
+    expect(toCustomer.body).toMatchObject({ status: "sent", channel: "sms", not_sent_reason: null });
+    expect(twilioCalls()).toHaveLength(1);
+  });
+
+  it("the Admin key texts a hand-entered LEAD (smsConsent null, no account, no website form) by leadId, and the text goes out", async () => {
+    process.env[LEG] = "on";
+    const k = await mint({ scopes: ["hub:read", "hub:draft"] });
+    const lead = await prisma.lead.create({ data: { name: `${TAG} Lead`, phone: "6155559977", source: "phone", smsConsent: null } });
+    try {
+      const res = await post(k.secret, { leadId: lead.id, channel: "sms", category: "thread_reply", body: "We can be there Tuesday at 9. Does that work?", idempotency_key: idem() });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body).toMatchObject({ status: "sent", channel: "sms", not_sent_reason: null });
+      expect(twilioCalls()).toHaveLength(1);
+      expect(new URLSearchParams(String(twilioCalls()[0]![1]?.body)).get("To")).toBe("+16155559977");
+      const row = await rowOf(res.body.messageId);
+      expect(row).toMatchObject({ status: "sent", authorBotKeyId: k.id });
+
+      // A lead who replied STOP is still refused by the same call.
+      await prisma.lead.update({ where: { id: lead.id }, data: { smsConsent: false } });
+      fetchMock.mockClear();
+      const stopped = await post(k.secret, { leadId: lead.id, channel: "sms", category: "thread_reply", body: "One more thing.", idempotency_key: idem() });
+      expect(stopped.status, JSON.stringify(stopped.body)).toBe(201);
+      expect(stopped.body.status).toBe("blocked");
+      expect(stopped.body.not_sent_reason).toMatch(/replied STOP/);
+      expect(twilioCalls()).toHaveLength(0);
+    } finally {
+      await prisma.hubThread.deleteMany({ where: { leadId: lead.id } });
+      await prisma.lead.delete({ where: { id: lead.id } });
+    }
   });
 
   it("an address that unsubscribed from email is refused: blocked, nothing sent", async () => {

@@ -325,15 +325,28 @@ describe("hubSend: the text branch (BA7)", () => {
     expect(twilioCalls()).toHaveLength(0);
   });
 
-  it("transactional keeps the consent gate: a customer who never said yes is refused (leg off or on), one who did is not", async () => {
-    const declined = await account({ smsConsent: null });
-    const draft = await textDraft(declined.thread.id, "visit_reminder", "Reminder for tomorrow.");
+  // Kyle 2026-11-26 ("REMOVE THE SMS CONSENT GATE COMPLETELY ... Keep STOP handling only"): this test used to pin that a customer who "never
+  // said yes" (smsConsent null) was refused with no_sms_consent. That gate is gone: STOP (smsConsent false) is the only refusal, and the code
+  // is now replied_stop (2026-11-26 review); no_sms_consent remains only as the historical code on rows written before today.
+  it("STOP is the only block: a customer who replied STOP is refused (leg off or on), one who was never asked is NOT", async () => {
+    const stopped = await account({ smsConsent: false });
+    const draft = await textDraft(stopped.thread.id, "visit_reminder", "Reminder for tomorrow.");
     await approveOnly(draft.id);
-    expect(await hubSend(draft.id, ACTOR)).toMatchObject({ status: "blocked", error: "no_sms_consent" });
+    expect(await hubSend(draft.id, ACTOR)).toMatchObject({ status: "blocked", error: "replied_stop" });
     expect(twilioCalls()).toHaveLength(0);
+
+    process.env.HUB_SMS_OUTBOUND_ENABLED = "on";
+    const never = await account({ smsConsent: null });
+    const reminder = await textDraft(never.thread.id, "visit_reminder", "Reminder for tomorrow.");
+    await approveOnly(reminder.id);
+    expect(await hubSend(reminder.id, ACTOR)).toMatchObject({ status: "sent" });
+    expect(twilioCalls()).toHaveLength(1);
   });
 
-  it("bypass 4: a thread_reply within 36 hours of their own text goes round the consent gate; at 37 hours it does not; another type never does", async () => {
+  // Kyle 2026-11-26: the 36-hour window used to be the only way round the consent gate for a known customer. There is no consent gate now, so a
+  // known customer (never asked, or ticked) is texted at any hour and with any send type; the window matters only for a number that is on no lead
+  // or customer (next test), and a STOP is refused even inside the window.
+  it("a known customer is texted whatever the type and however old their last text; a STOP is refused even inside the 36 hours", async () => {
     process.env.HUB_SMS_OUTBOUND_ENABLED = "on";
     const { thread, phone } = await account({ smsConsent: null });
     const inbound = (hoursAgo: number) => prisma.hubMessage.create({
@@ -348,22 +361,30 @@ describe("hubSend: the text branch (BA7)", () => {
     expect(await hubSend(reply.id, ACTOR)).toMatchObject({ status: "sent" });
     expect(twilioCalls()).toHaveLength(1);
 
-    // Not a thread_reply: the window does not help.
+    // Not a thread_reply: sent too (it never needed the window).
     const reminder = await textDraft(thread.id, "visit_reminder", "Reminder for tomorrow.");
     await approveOnly(reminder.id);
-    expect(await hubSend(reminder.id, ACTOR)).toMatchObject({ status: "blocked", error: "no_sms_consent" });
+    expect(await hubSend(reminder.id, ACTOR)).toMatchObject({ status: "sent" });
 
-    // Their text is now 37 hours old: the window has closed.
+    // Their text is now 37 hours old: a known customer is still texted.
     await prisma.hubMessage.update({ where: { id: hours35.id }, data: { createdAt: new Date(Date.now() - 37 * 3_600_000) } });
     const late = await textDraft(thread.id, "thread_reply", "Following up.");
     await approveOnly(late.id);
-    expect(await hubSend(late.id, ACTOR)).toMatchObject({ status: "blocked", error: "no_sms_consent" });
-    // A newer text from them reopens it.
-    await inbound(1);
-    const again = await textDraft(thread.id, "thread_reply", "Following up again.");
-    await approveOnly(again.id);
-    expect(await hubSend(again.id, ACTOR)).toMatchObject({ status: "sent" });
+    expect(await hubSend(late.id, ACTOR)).toMatchObject({ status: "sent" });
     expect(phone).toBeTruthy();
+
+    // A customer who replied STOP is refused even with their own text 1 hour old: the window never overrode a STOP.
+    const stopped = await account({ smsConsent: false });
+    await prisma.hubMessage.create({
+      data: {
+        threadId: stopped.thread.id, authorType: "customer", authorDisplay: "Customer", channel: "sms", direction: "inbound", status: "received",
+        body: "STOP", createdAt: new Date(Date.now() - 3_600_000), toPhone10: null,
+      },
+    });
+    const refused = await textDraft(stopped.thread.id, "thread_reply", "One more thing.");
+    await approveOnly(refused.id);
+    expect(await hubSend(refused.id, ACTOR)).toMatchObject({ status: "blocked", error: "replied_stop" });
+    expect(twilioCalls()).toHaveLength(3);
   });
 
   it("a number with no Lead or Customer is never-asked: answerable only within 36 hours of its last text", async () => {

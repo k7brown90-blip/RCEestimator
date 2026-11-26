@@ -82,10 +82,13 @@ describe("sendAlert", () => {
     expect(result.reason).toBe("twilio-unconfigured");
   });
 
-  it("uses the consent bypass — an alert is internal, not a marketing send", async () => {
+  // Kyle 2026-11-26: the STOP-check bypass flag is gone (STOP is the only block and it always holds). An alert is an INTERNAL text, which
+  // never reaches the STOP branch, so it needs no flag; what matters is that it is sent as internal.
+  it("sends an alert as an internal text, not a customer one", async () => {
     await sendAlert({ severity: "critical", eventType: "crash", service: "svc" });
     const opts = sendSmsMock.mock.calls[0][2];
-    expect(opts?.bypassConsentCheck).toBe(true);
+    expect(opts?.messageClass).toBe("internal");
+    expect(opts).not.toHaveProperty("bypassStopCheck");
   });
 });
 

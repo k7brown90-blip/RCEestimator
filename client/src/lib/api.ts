@@ -965,6 +965,13 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  /**
+   * The Conversation's "Text the customer" box (Kyle 2026-11-26): one text to the record's phone on file, any lead or customer. STOP is the
+   * only refusal; a text that does not go answers 409 with the reason (it is recorded in the conversation as "Not texted").
+   */
+  sendRecordText: (input: { target: "lead" | "account" | "job"; id: string; body: string; clientMessageId?: string }) =>
+    request<{ sent: boolean; messageId: string }>("/communications/text", { method: "POST", body: JSON.stringify(input) }),
+
   // ─── Accounts ─────────────────────────────────────────────────────────────
   // The server exposes these under both /accounts and /customers (same handlers,
   // Prisma model is still Customer). The client speaks "account" throughout.

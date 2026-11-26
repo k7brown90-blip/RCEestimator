@@ -22,7 +22,7 @@ import { emitHubEventSafe } from "../hubEvents";
 /** Mutable per-turn context handed to every tool run. */
 export interface ToolContext {
   chatId: string;
-  /** The latest message's smsConsent — only ever a boolean the website sent, never inferred. */
+  /** The latest message's smsConsent — only ever a boolean the website sent, never inferred. Only `true` is recorded (Kyle 2026-11-26). */
   smsConsent: boolean | undefined;
   /** What the website saw the visitor typing on, this message. Undefined when it did not say. */
   device?: "phone" | "computer";
@@ -322,8 +322,8 @@ async function updateWorkOrder(rawArgs: unknown, ctx: ToolContext): Promise<Tool
             platform: chat.platform,
             notes,
             urgentFlag: priority,
-            // Only a boolean the website sent is recorded; never inferred.
-            smsConsent: typeof ctx.smsConsent === "boolean" ? ctx.smsConsent : null,
+            // Kyle 2026-11-26: true when the website sent a ticked box, otherwise null. Never false: false means the person replied STOP.
+            smsConsent: ctx.smsConsent === true ? true : null,
           },
         });
         await tx.bookingChat.update({

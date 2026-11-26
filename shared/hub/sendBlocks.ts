@@ -13,8 +13,12 @@ export const SEND_BLOCK_REASONS = {
   review_never_sms: "A review request is never sent by text. Ask on site (QR or email) instead.",
   no_phone: "There is no phone number on file to text.",
   opted_out: "No texts, call or email — this customer opted out of texts.",
-  no_sms_consent: "This customer has not agreed to texts. Call or email instead.",
-  reply_window_closed: "Never asked — you can only reply within 36 hours of their last text.",
+  // Kyle 2026-11-26: the consent gate is gone; STOP is the ONLY reason a text to a lead or customer is blocked, and it has its own code.
+  // no_sms_consent is kept ONLY so rows written before 2026-11-26 (HubMessage.error, send_blocked audit rows) still read truthfully: those
+  // were blocked because the person had never been asked, NOT because they replied STOP. Nothing writes it any more.
+  replied_stop: "This person replied STOP, so no texts will be sent to them. Call or email instead.",
+  no_sms_consent: "Not texted under the old consent rule, which was removed 2026-11-26. This person can be texted now.",
+  reply_window_closed: "This number is not on any lead or customer, so you can only reply within 36 hours of their last text.",
   empty_body: "A text needs words.",
   double_brand: "The text already starts with the company name. The header is added for you; take it out of the message.",
   double_footer: "The text already says \"Reply STOP\". The footer is added for you; take it out of the message.",
@@ -37,7 +41,7 @@ export function isSendBlockReason(value: unknown): value is SendBlockReason {
 
 /**
  * Reasons an EDIT can cure: the words themselves are the problem (a text that already carries the header or the
- * STOP line, or has no words). Every other reason (no consent, opted out, marketing, no phone...) is about the
+ * STOP line, or has no words). Every other reason (replied STOP, opted out, marketing, no phone...) is about the
  * customer or the kind of message, so editing the words cannot fix it and "Edit" stays greyed for it.
  */
 export const EDIT_FIXABLE_REASONS: readonly SendBlockReason[] = ["double_brand", "double_footer", "empty_body"];

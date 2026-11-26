@@ -169,7 +169,7 @@ describe("the approve_drafts gate on all three decisions", () => {
     await prisma.technician.delete({ where: { id: tech.id } });
   });
 
-  it("no route, agent door or tool file imports the hubSend function: only the card registry (Approve's run) and the agents' direct send do (Kyle 2026-11-24: the auto-send rule file became services/hubAgentSend.ts)", () => {
+  it("no route, agent door or tool file imports the hubSend function: only the card registry (Approve's run), the agents' direct send and an office person's own text do (Kyle 2026-11-24: the auto-send rule file became services/hubAgentSend.ts)", () => {
     const root = path.resolve(__dirname, "..", "src");
     const files: string[] = [];
     const walk = (dir: string) => {
@@ -182,7 +182,9 @@ describe("the approve_drafts gate on all three decisions", () => {
     walk(root);
     const importsFunction = /import\s*\{[^}]*\bhubSend\b[^}]*\}\s*from/;
     const users = files.filter((f) => importsFunction.test(readFileSync(f, "utf8"))).map((f) => path.relative(root, f).replace(/\\/g, "/")).sort();
-    expect(users).toEqual(["services/hubActions/registry.ts", "services/hubAgentSend.ts"]);
+    // Kyle 2026-11-26: an office person's own text from the Conversation box (services/hubOfficeText.ts) is the third caller - the person typing it is
+    // the approval, and it still goes through the one sender. No route, agent door or tool file imports hubSend.
+    expect(users).toEqual(["services/hubActions/registry.ts", "services/hubAgentSend.ts", "services/hubOfficeText.ts"]);
   });
 });
 
