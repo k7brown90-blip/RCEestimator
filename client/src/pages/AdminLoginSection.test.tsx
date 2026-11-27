@@ -8,15 +8,18 @@
  * Remove asks first; the password box never shows a saved password.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { AdminLoginSection } from "./AdminLoginSection";
 import { api } from "../lib/api";
 import type { AdminLoginStatus } from "../lib/types";
 import { OWNER_NO_GRANT, PIN_SESSION, PRINCIPAL_SESSION } from "../test/sessions";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-ai-admin-login"));
 
 const NONE: AdminLoginStatus = { configured: false, username: null, enabled: false, updatedAt: null };
 const ON: AdminLoginStatus = { configured: true, username: "grok-admin", enabled: true, updatedAt: "2026-11-15T12:00:00.000Z" };
@@ -61,7 +64,7 @@ describe("AdminLoginSection", () => {
 
   it("Save login sends the username and password, clears the password box, and says the AI admin is signed out", async () => {
     const { save } = show(NONE);
-    await screen.findByText(/Not set up/);
+    await waitFor(() => expect(screen.getByTestId("admin-login-status").textContent).toMatch(/Not set up/));
     fireEvent.change(username(), { target: { value: "grok-admin" } });
     fireEvent.change(password(), { target: { value: "correct horse battery" } });
     fireEvent.click(saveBtn());
@@ -115,7 +118,7 @@ describe("AdminLoginSection", () => {
   it("shows the server's message when a save is refused", async () => {
     const { save } = show(NONE);
     save.mockRejectedValueOnce(new Error("Only the owner can change the AI admin login."));
-    await screen.findByText(/Not set up/);
+    await waitFor(() => expect(screen.getByTestId("admin-login-status").textContent).toMatch(/Not set up/));
     fireEvent.change(username(), { target: { value: "grok-admin" } });
     fireEvent.change(password(), { target: { value: "correct horse battery" } });
     fireEvent.click(saveBtn());

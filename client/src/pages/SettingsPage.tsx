@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
+import { CollapsibleCard } from "../components/CollapsibleCard";
+import { UnsavedNote } from "../components/UnsavedNote";
+import { sameFields, sameNumberText, useSeededForm } from "../lib/useSeededForm";
 import { api } from "../lib/api";
 import type { TaxRepriceOutcome } from "../lib/api";
 import { PowerLockNote } from "../components/PowerLockNote";
@@ -65,6 +68,19 @@ type TreasuryForm = {
 };
 const EMPTY_TREASURY: TreasuryForm = { mainFinancialAccountId: "", mainFloat: "0", truckFloats: {}, chaseAccountLabel: "", chaseExternalAccountId: "" };
 
+/** Two treasury forms hold the same values: floats compare as numbers (a blank float is 0, as on save), text is trimmed (as on save). */
+function sameTreasury(a: TreasuryForm, b: TreasuryForm): boolean {
+  const float = (s: string) => (s.trim() === "" ? "0" : s);
+  if (a.mainFinancialAccountId.trim() !== b.mainFinancialAccountId.trim()) return false;
+  if (a.chaseAccountLabel.trim() !== b.chaseAccountLabel.trim()) return false;
+  if (a.chaseExternalAccountId.trim() !== b.chaseExternalAccountId.trim()) return false;
+  if (!sameNumberText(float(a.mainFloat), float(b.mainFloat))) return false;
+  for (const id of new Set([...Object.keys(a.truckFloats), ...Object.keys(b.truckFloats)])) {
+    if (!sameNumberText(float(a.truckFloats[id] ?? "0"), float(b.truckFloats[id] ?? "0"))) return false;
+  }
+  return true;
+}
+
 /** Exported for its test (the Kyle-only Save). */
 export function TreasurySection() {
   const queryClient = useQueryClient();
@@ -74,20 +90,20 @@ export function TreasurySection() {
   const { data: treasury } = useQuery({ queryKey: ["treasury-settings"], queryFn: api.treasurySettings });
   const { data: balances } = useQuery({ queryKey: ["financials-balances"], queryFn: api.financialsBalances });
   const { data: trucksData } = useQuery({ queryKey: ["trucks"], queryFn: api.trucks });
-  const [form, setForm] = useState<TreasuryForm>(EMPTY_TREASURY);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!treasury) return;
-    setForm({
+  // The form follows the saved floats until the person types; typed, unsaved floats are never overwritten by a refetch, and the folded
+  // row says "Unsaved changes" (Kyle, 2026-11-26).
+  const treasurySeed: TreasuryForm = treasury
+    ? {
       mainFinancialAccountId: treasury.mainFinancialAccountId ?? "",
       mainFloat: String(treasury.mainFloat ?? 0),
       truckFloats: Object.fromEntries(Object.entries(treasury.truckFloats ?? {}).map(([k, v]) => [k, String(v)])),
       chaseAccountLabel: treasury.chaseAccountLabel ?? "",
       chaseExternalAccountId: treasury.chaseExternalAccountId ?? "",
-    });
-  }, [treasury]);
+    }
+    : EMPTY_TREASURY;
+  const [form, setForm, treasuryDirty] = useSeededForm(treasurySeed, sameTreasury);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const save = useMutation({
     mutationFn: (value: TreasurySettings) => api.saveTreasurySettings(value),
@@ -104,6 +120,17 @@ export function TreasurySection() {
   const trucks = (trucksData?.trucks ?? []).filter((t) => t.isActive);
   const accounts = balances?.available ? balances.financialAccounts : [];
   const chosenMissing = form.mainFinancialAccountId && !accounts.some((a) => a.id === form.mainFinancialAccountId);
+
+  // The folded row: what is set, or why it cannot be changed (greyed with a reason, never hidden).
+  const treasuryState = treasury && (treasury.mainFinancialAccountId || treasury.chaseExternalAccountId)
+    ? `Main float ${money(treasury.mainFloat ?? 0)}`
+    : "Not set up yet";
+  const treasurySummary = (
+    <>
+      {!canTreasury && treasuryReason ? `${treasuryState} — ${treasuryReason}` : treasuryState}
+      <UnsavedNote show={treasuryDirty} />
+    </>
+  );
 
   const onSave = () => {
     const num = (s: string) => (s.trim() === "" ? 0 : Number(s));
@@ -123,8 +150,12 @@ export function TreasurySection() {
 
   return (
     <SectionCard
+      id="settings-treasury"
       title="Treasury"
-      subtitle="Working balances (floats) for the main financial account and each truck, and the Chase account the month-end sweep goes to. The sweep itself is a click on Financials — nothing here runs on its own."
+      attention={treasuryDirty}
+      // Kyle, 2026-09-09: the sweep itself is a click on Financials, never a schedule; the floats are set here.
+      subtitle="The working balances kept in the main account and each truck, and the Chase account the month-end sweep goes to; nothing here runs on its own."
+      summary={treasurySummary}
     >
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm font-medium">
@@ -179,13 +210,24 @@ export function TreasurySection() {
   );
 }
 
-function SectionCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+/**
+ * One Settings card (Kyle, 2026-11-26: "All cards should have be collapsable in the settings"; "All folded"; "Yes, one line each").
+ * It is the shared CollapsibleCard: folded it is the title plus a one-line `summary`, open it shows the one-sentence
+ * `subtitle` and the controls. The caller keeps its hooks and typed edits ABOVE this card, so folding never loses them.
+ * `id` is the stored open/closed key (rce.card.<id>); `attention` opens the card by itself while a warning is live.
+ */
+function SectionCard({ id, title, subtitle, summary, attention, children }: {
+  id: string;
+  title: string;
+  subtitle?: string;
+  summary?: React.ReactNode;
+  attention?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <section className="card mt-5 p-6">
-      <h2 className="text-lg font-semibold">{title}</h2>
-      {subtitle ? <p className="mt-1 text-sm text-rce-muted">{subtitle}</p> : null}
-      <div className="mt-4">{children}</div>
-    </section>
+    <CollapsibleCard id={id} title={title} subtitle={subtitle} summary={summary} attention={attention}>
+      {children}
+    </CollapsibleCard>
   );
 }
 
@@ -215,6 +257,7 @@ function Field({ label, value, onChange, placeholder, type = "text", disabled, t
   );
 }
 
+const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 const pctText = (rate: number | null) => (rate === null ? "—" : `${Math.round(rate * 100_000) / 1000}%`);
 
 /** What saving the sales tax rate did to the price book: how many items repriced and which hand-priced ones were left alone. */
@@ -252,6 +295,9 @@ function TaxRepriceResult({ outcome }: { outcome: TaxRepriceOutcome }) {
   );
 }
 
+const NO_TERRITORIES: Territory[] = [];
+const sameTerritories = (a: Territory[], b: Territory[]): boolean => a.length === b.length && a.every((t, i) => sameFields(t, b[i]));
+
 /** Exported for its test: Settings -> Purchasing "Sales tax rate (%)". Saving a different rate reprices the price book (Kyle, 2026-11-25: "Automatically on deploy"). */
 export function PurchasingSection() {
   const queryClient = useQueryClient();
@@ -259,7 +305,11 @@ export function PurchasingSection() {
   const [purchasing, setPurchasing] = useState<PurchasingSettings>(EMPTY_PURCHASING);
   // Edited as a percent string ("9.75"); converted to the stored decimal fraction (0.0975)
   // only on save (Kyle, 2026-09-23: "Store the DECIMAL FRACTION, display a percent.").
-  const [taxRatePercent, setTaxRatePercent] = useState<string>(String(DEFAULT_SALES_TAX_RATE * 100));
+  // The box follows the saved rate until the person types; a typed, unsaved rate survives another card's save (Kyle, 2026-11-26).
+  const [taxRatePercent, setTaxRatePercent, taxDirty] = useSeededForm(
+    String(Math.round((settings?.purchasing?.salesTaxRate ?? DEFAULT_SALES_TAX_RATE) * 100_000) / 1000),
+    sameNumberText,
+  );
   const [purchasingError, setPurchasingError] = useState<string | null>(null);
   // What the save did to the price book (server: priceBookTaxReprice.ts).
   const [repriceOutcome, setRepriceOutcome] = useState<TaxRepriceOutcome | null>(null);
@@ -270,7 +320,6 @@ export function PurchasingSection() {
   useEffect(() => {
     if (!settings?.purchasing) return;
     setPurchasing({ ...EMPTY_PURCHASING, ...settings.purchasing });
-    setTaxRatePercent(String(Math.round((settings.purchasing.salesTaxRate ?? DEFAULT_SALES_TAX_RATE) * 100_000) / 1000));
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -300,8 +349,16 @@ export function PurchasingSection() {
 
   return (
       <SectionCard
+        id="settings-purchasing"
         title="Purchasing"
-        subtitle="Sales tax is inside every sell price (Kyle, 2026-11-24: 'Tax in sell, all items'): sell = hours × shop rate + (cost × (1 + this rate)) × markup. Saving a different rate re-prices the whole price book right now: no preview, no Apply button. Items whose price was set by hand are left alone and listed below. Estimates already sent or signed keep their prices; open drafts follow the new prices. A purchase order or receipt still lands at its pre-tax cost plus this tax (Kyle, 2026-09-23: 'Get the direct cost and apply TN tax rate.'); nothing already landed is touched."
+        attention={taxDirty}
+        // The rulings behind this line stay here, not on screen. Kyle, 2026-11-24: "Tax in sell, all items" (sell = hours × shop rate
+        // + (cost × (1 + this rate)) × markup). Saving a different rate re-prices the price book at once: no preview, no Apply;
+        // hand-priced items are left alone and listed; sent or signed estimates keep their prices, open drafts follow. A purchase order
+        // or receipt lands at its pre-tax cost plus this tax (Kyle, 2026-09-23: "Get the direct cost and apply TN tax rate."); nothing
+        // already landed is touched.
+        subtitle="The sales tax rate that is built into every sell price; saving a different rate re-prices the price book right away."
+        summary={<>{`${pctText(settings?.purchasing?.salesTaxRate ?? DEFAULT_SALES_TAX_RATE)} sales tax${!canPrice && priceReason ? ` — ${priceReason}` : ""}`}<UnsavedNote show={taxDirty} /></>}
       >
         <div className="grid gap-3 md:grid-cols-2">
           <Field
@@ -334,25 +391,22 @@ export function SettingsPage() {
   const queryClient = useQueryClient();
   const { data: settings } = useQuery({ queryKey: ["companySettings"], queryFn: api.companySettings });
 
-  const [profile, setProfile] = useState<CompanyProfile>(EMPTY_PROFILE);
-  const [hours, setHours] = useState<OperatingHours>(EMPTY_HOURS);
-  const [territories, setTerritories] = useState<Territory[]>([]);
+  // Each of the five forms follows the saved value until the person types in it. Typed, unsaved text is never overwritten when ANOTHER
+  // card is saved (that refetches the company settings), and a folded card says "Unsaved changes" on its row and opens by itself
+  // (Kyle, 2026-11-26). See lib/useSeededForm.ts.
+  const [profile, setProfile, profileDirty] = useSeededForm<CompanyProfile>({ ...EMPTY_PROFILE, ...settings?.companyProfile }, sameFields);
+  const [hours, setHours, hoursDirty] = useSeededForm<OperatingHours>({ ...EMPTY_HOURS, ...settings?.operatingHours }, sameFields);
+  const [territories, setTerritories, territoriesDirty] = useSeededForm<Territory[]>(settings?.territories ?? NO_TERRITORIES, sameTerritories);
   const [selectedTerritory, setSelectedTerritory] = useState(0);
-  const [legal, setLegal] = useState<LegalInfo>(EMPTY_LEGAL);
+  const [legal, setLegal, legalDirty] = useSeededForm<LegalInfo>({ ...EMPTY_LEGAL, ...settings?.legal }, sameFields);
   // Employer cost on top of wages (Kyle, 2026-10-08, decision 10): a PERCENT string while typing
   // ("9.5"), saved as the number 9.5 — never a fraction. Empty clears it to "not set".
-  const [employerCostPercent, setEmployerCostPercent] = useState<string>("");
+  const [employerCostPercent, setEmployerCostPercent, payrollDirty] = useSeededForm<string>(
+    settings?.payroll?.employerCostPercent != null ? String(settings.payroll.employerCostPercent) : "",
+    sameNumberText,
+  );
   const [payrollError, setPayrollError] = useState<string | null>(null);
   const [savedKey, setSavedKey] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!settings) return;
-    if (settings.companyProfile) setProfile({ ...EMPTY_PROFILE, ...settings.companyProfile });
-    if (settings.operatingHours) setHours({ ...EMPTY_HOURS, ...settings.operatingHours });
-    if (settings.territories) setTerritories(settings.territories);
-    if (settings.legal) setLegal({ ...EMPTY_LEGAL, ...settings.legal });
-    setEmployerCostPercent(settings.payroll?.employerCostPercent != null ? String(settings.payroll.employerCostPercent) : "");
-  }, [settings]);
 
   const saveMutation = useMutation({
     mutationFn: ({ key, value }: { key: string; value: unknown }) => api.saveCompanySetting(key, value),
@@ -421,11 +475,16 @@ export function SettingsPage() {
 
   return (
     <div>
-      <PageHeader title="Settings" subtitle="Company configuration — licensing, hours, territories, legal" />
+      <PageHeader title="Settings" subtitle="Click a card to open it: company details, pricing and money, AI agents, and messages." />
+
+      <div className="space-y-4">
 
       <SectionCard
+        id="settings-company-profile"
         title="Company profile"
-        subtitle="Business identity, license, and insurance. This feeds documents, reports, and the voice agent."
+        attention={profileDirty}
+        subtitle="Your business name, contact details, license and insurance, used on documents and reports."
+        summary={<>{settings?.companyProfile?.licenseNumber ? `License ${settings.companyProfile.licenseNumber}` : "No license number yet"}<UnsavedNote show={profileDirty} /></>}
       >
         <div className="grid gap-3 md:grid-cols-2">
           <Field label="Company name" value={profile.companyName} onChange={(v) => setP({ companyName: v })} />
@@ -450,7 +509,13 @@ export function SettingsPage() {
         </button>
       </SectionCard>
 
-      <SectionCard title="Operating hours" subtitle="Displayed to customers and used by the voice agent.">
+      <SectionCard
+        id="settings-operating-hours"
+        title="Operating hours"
+        attention={hoursDirty}
+        subtitle="The hours customers are shown."
+        summary={<>{settings?.operatingHours?.weekdays ? `Weekdays ${settings.operatingHours.weekdays}` : null}<UnsavedNote show={hoursDirty} /></>}
+      >
         <div className="grid gap-3 md:grid-cols-2">
           <Field label="Weekdays" value={hours.weekdays} onChange={(v) => setH({ weekdays: v })} />
           <Field label="Saturday" value={hours.saturday} onChange={(v) => setH({ saturday: v })} />
@@ -468,8 +533,11 @@ export function SettingsPage() {
       </SectionCard>
 
       <SectionCard
+        id="settings-service-territories"
         title="Service territories"
-        subtitle="Per-ZIP operating data: adopted code cycle, utility provider with contact info for scheduling power cuts, and the AHJ inspector."
+        attention={territoriesDirty}
+        subtitle="For each ZIP code: the code cycle, the utility contact for power cuts and the inspector contact."
+        summary={<>{`${territories.length} territor${territories.length === 1 ? "y" : "ies"}`}<UnsavedNote show={territoriesDirty} /></>}
       >
         {territory ? (
           <>
@@ -534,8 +602,11 @@ export function SettingsPage() {
       </SectionCard>
 
       <SectionCard
+        id="settings-legal-warranty"
         title="Legal & warranty"
-        subtitle="Warranty terms, company policies, and insurance documentation notes."
+        attention={legalDirty}
+        subtitle="Warranty terms, company policies and insurance notes."
+        summary={<>{settings?.legal?.warrantyText ? "Warranty terms written" : "Nothing written yet"}<UnsavedNote show={legalDirty} /></>}
       >
         <div className="grid gap-3">
           <label className="text-sm font-medium">
@@ -586,8 +657,15 @@ export function SettingsPage() {
 
       {/* ── Payroll (Kyle, 2026-10-08, decision 10): labor on a job is the TOTAL cost Red Cedar pays ── */}
       <SectionCard
+        id="settings-payroll"
         title="Payroll"
-        subtitle="Labor on a job counts at its total cost in the commission basis (Kyle, 2026-10-08: 'It should be the total cost that we pay because that all comes out of the field work.'). Hours × the technician's hourly rate × (1 + this percent). Until it is set, every commission basis says 'employer cost % not set' — never 0%."
+        attention={payrollDirty}
+        // Kyle, 2026-10-08: "It should be the total cost that we pay because that all comes out of the field work." Labor on a
+        // job counts at hours × the technician's hourly rate × (1 + this percent) in the commission basis; until it is set, every
+        // commission basis says "employer cost % not set", never 0%. The percent is everything paid on top of wages: employer
+        // Social Security 6.2%, Medicare 1.45%, federal and Tennessee unemployment, workers' comp.
+        subtitle="The employer cost, as a percent on top of wages, that counts toward a job's labor in the commission basis."
+        summary={<>{settings?.payroll?.employerCostPercent != null ? `${settings.payroll.employerCostPercent}% employer cost` : "Employer cost not set"}<UnsavedNote show={payrollDirty} /></>}
       >
         <div className="grid gap-3 md:grid-cols-2">
           <Field
@@ -598,10 +676,7 @@ export function SettingsPage() {
             onChange={(v) => setEmployerCostPercent(v)}
           />
         </div>
-        <p className="mt-2 text-xs text-rce-muted">
-          Everything Red Cedar pays on top of wages — employer Social Security 6.2%, Medicare 1.45%, federal and Tennessee unemployment, workers' comp.
-          A percent, e.g. 9.5 means 9.5%. Leave it empty to clear it.
-        </p>
+        <p className="mt-2 text-xs text-rce-muted">A percent: 9.5 means 9.5%. Leave it empty to clear it.</p>
         {payrollError && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{payrollError}</p>}
         {saveMutation.error && saveMutation.variables?.key === "payroll" && (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{(saveMutation.error as Error).message}</p>
@@ -639,6 +714,7 @@ export function SettingsPage() {
 
       {/* ── Message audit log (U4, Kyle only): what the hub did, with the "Blocked texts" filter ── */}
       <MessageAuditLogSection />
+      </div>
     </div>
   );
 }

@@ -14,13 +14,17 @@
  * until it is saved - and an estimate already sent keeps the plans it was sent with.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { CollapsibleCard } from "../components/CollapsibleCard";
+import { UnsavedNote } from "../components/UnsavedNote";
 import type { FinancingPlan, FinancingPlanType } from "../../../shared/financing";
 
 /** The form holds numbers as text while they are typed; they are parsed on save. */
 interface PlanForm {
+  /** Client-only identity of a row (never sent): it keeps a plan's fold and "edited" flag with it when plans move or are removed. */
+  uid: string;
   planNumber: string;
   type: FinancingPlanType;
   description: string;
@@ -34,7 +38,11 @@ interface PlanForm {
   terms: string;
 }
 
-const toForm = (p: FinancingPlan): PlanForm => ({
+let nextUid = 0;
+const newUid = () => `plan-${++nextUid}`;
+
+const toForm = (p: FinancingPlan, uid: string = newUid()): PlanForm => ({
+  uid,
   planNumber: p.planNumber,
   type: p.type,
   description: p.description,
@@ -48,7 +56,23 @@ const toForm = (p: FinancingPlan): PlanForm => ({
   terms: p.disclosure.terms,
 });
 
-const EMPTY_PLAN: PlanForm = {
+/**
+ * The rows for a (re)loaded plan list, keeping each plan's uid when it was already on screen - matched by plan number first, then by
+ * position - so a plan that was open stays open through "Save financing plans" and "Discard changes" (Kyle, 2026-11-26: "Fold each
+ * financing plan"). A plan that was not on screen gets a new uid.
+ */
+const reseed = (plans: FinancingPlan[], prev: PlanForm[]): PlanForm[] => {
+  const used = new Set<string>();
+  return plans.map((p, i) => {
+    const byNumber = prev.find((r) => !used.has(r.uid) && r.planNumber.trim() === p.planNumber);
+    const byPosition = prev[i] && !used.has(prev[i].uid) ? prev[i] : undefined;
+    const uid = (byNumber ?? byPosition)?.uid ?? newUid();
+    used.add(uid);
+    return toForm(p, uid);
+  });
+};
+
+const EMPTY_PLAN: Omit<PlanForm, "uid"> = {
   planNumber: "",
   type: "reduced_apr",
   description: "",
@@ -61,6 +85,9 @@ const EMPTY_PLAN: PlanForm = {
   important: "",
   terms: "",
 };
+
+/** What a row holds, without its identity: two rows with the same text are the same plan. */
+const textOf = (r: PlanForm): string => JSON.stringify({ ...r, uid: "" });
 
 /** "" and anything non-numeric become NaN so the server's validation names the box, never a silent 0. */
 const num = (s: string): number => (s.trim() === "" ? Number.NaN : Number(s));
@@ -84,14 +111,24 @@ export function FinancingPlansSection() {
   const queryClient = useQueryClient();
   const { data: loaded } = useQuery({ queryKey: ["financingPlans"], queryFn: api.financingPlans });
   const [rows, setRows] = useState<PlanForm[]>([]);
+  // What each row (by uid) read when it was loaded: a row that differs, or is not here, is "edited - not saved".
+  const [base, setBase] = useState<Record<string, string>>({});
+  // Which plans are unfolded. Every plan starts folded (Kyle, 2026-11-26: "Fold each financing plan"); a plan just added opens.
+  const [openPlans, setOpenPlans] = useState<Record<string, boolean>>({});
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The rows as last rendered, so a reload can hand each plan its uid back (declared before the reseed effect: effects run in order).
+  const rowsRef = useRef(rows);
+  useEffect(() => { rowsRef.current = rows; });
+
   useEffect(() => {
     // Never overwrite what is being typed with a refetch.
     if (!loaded || dirty) return;
-    setRows(loaded.plans.map(toForm));
+    const next = reseed(loaded.plans, rowsRef.current);
+    setRows(next);
+    setBase(Object.fromEntries(next.map((r) => [r.uid, textOf(r)])));
   }, [loaded, dirty]);
 
   const save = useMutation({
@@ -112,8 +149,10 @@ export function FinancingPlansSection() {
     setRows((list) => list.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   };
   const add = () => {
+    const row: PlanForm = { ...EMPTY_PLAN, uid: newUid() };
     setDirty(true);
-    setRows((list) => [...list, { ...EMPTY_PLAN }]);
+    setRows((list) => [...list, row]);
+    setOpenPlans((o) => ({ ...o, [row.uid]: true }));
   };
   const remove = (index: number) => {
     setDirty(true);
@@ -132,45 +171,70 @@ export function FinancingPlansSection() {
   const discard = () => {
     setDirty(false);
     setError(null);
-    setRows((loaded?.plans ?? []).map(toForm));
+    const next = reseed(loaded?.plans ?? [], rows);
+    setRows(next);
+    setBase(Object.fromEntries(next.map((r) => [r.uid, textOf(r)])));
   };
 
   const input = "field mt-1 w-full";
 
-  return (
-    <section className="card mt-5 p-6" data-testid="financing-plans-section">
-      <h2 className="text-lg font-semibold">Financing plans (Synchrony)</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        The plans a customer is shown a monthly payment for, in the order listed here (change it with Move up / Move down; the screens keep this order, they do not re-sort by payment). Edit these when
-        Synchrony changes a rate or its wording. Switching a plan off, removing it, or changing it never changes an
-        estimate that was already sent &mdash; each sent estimate keeps the plans it went out with.
-      </p>
+  const offered = rows.filter((r) => r.active).length;
+  // The folded row: the count, and "Unsaved changes" so a folded card never hides work that is not saved. Unsaved edits also open the card.
+  const summary = (
+    <>
+      {rows.length === 0 ? "No plans yet" : `${rows.length} plan${rows.length === 1 ? "" : "s"}, ${offered} offered`}
+      <UnsavedNote show={dirty} />
+    </>
+  );
 
+  return (
+    <CollapsibleCard
+      id="settings-financing-plans"
+      title="Financing plans (Synchrony)"
+      data-testid="financing-plans-section"
+      attention={dirty}
+      // Kyle, 2026-10-08: the plan list is editable "because Synchrony changes rates". The screens keep the order listed here (Move up /
+      // Move down), they do not re-sort by payment; switching a plan off, removing it or changing it never changes an estimate already sent.
+      subtitle="The Synchrony plans a customer is shown a monthly payment for, in this order; changing a plan never changes an estimate that was already sent."
+      summary={summary}
+    >
       <div className="mt-4 space-y-4">
         {rows.length === 0 && <p className="text-sm text-rce-muted">No plans yet. Use &ldquo;Add a plan&rdquo; below.</p>}
         {rows.map((r, index) => (
-          <div key={index} className="rounded-lg border border-rce-border bg-white p-4" data-testid={`financing-plan-${index}`}>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-sm font-semibold">
+          <CollapsibleCard
+            key={r.uid}
+            id={`settings-financing-plan-${r.uid}`}
+            inner
+            open={openPlans[r.uid] === true}
+            onOpenChange={(next) => setOpenPlans((o) => ({ ...o, [r.uid]: next }))}
+            data-testid={`financing-plan-${index}`}
+            title={
+              <>
                 {r.planNumber ? `Plan ${r.planNumber}` : "New plan"}
                 {r.description ? ` — ${r.description}` : ""}
-                {!r.active && <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs font-normal text-slate-600">Off &mdash; customers do not see it</span>}
-              </span>
-              <span className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-1 text-sm">
-                  <input type="checkbox" checked={r.active} onChange={(e) => edit(index, { active: e.target.checked })} />
-                  Offer to customers
-                </label>
-                <button type="button" className="btn px-2 py-0.5 text-xs min-h-0" disabled={index === 0} title={index === 0 ? "Already first" : "Show this plan earlier"} onClick={() => move(index, -1)}>
-                  Move up
-                </button>
-                <button type="button" className="btn px-2 py-0.5 text-xs min-h-0" disabled={index === rows.length - 1} title={index === rows.length - 1 ? "Already last" : "Show this plan later"} onClick={() => move(index, 1)}>
-                  Move down
-                </button>
-                <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => remove(index)}>
-                  Remove
-                </button>
-              </span>
+              </>
+            }
+            summary={
+              <>
+                {!r.active && <span className="mr-2 rounded bg-slate-100 px-2 py-0.5 text-slate-600">Off &mdash; customers do not see it</span>}
+                {dirty && base[r.uid] !== textOf(r) && <span className="font-semibold text-amber-800">Edited &mdash; not saved</span>}
+              </>
+            }
+          >
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <label className="flex items-center gap-1 text-sm">
+                <input type="checkbox" checked={r.active} onChange={(e) => edit(index, { active: e.target.checked })} />
+                Offer to customers
+              </label>
+              <button type="button" className="btn px-2 py-0.5 text-xs min-h-0" disabled={index === 0} title={index === 0 ? "Already first" : "Show this plan earlier"} onClick={() => move(index, -1)}>
+                Move up
+              </button>
+              <button type="button" className="btn px-2 py-0.5 text-xs min-h-0" disabled={index === rows.length - 1} title={index === rows.length - 1 ? "Already last" : "Show this plan later"} onClick={() => move(index, 1)}>
+                Move down
+              </button>
+              <button type="button" className="btn btn-danger px-2 py-0.5 text-xs min-h-0" onClick={() => remove(index)}>
+                Remove
+              </button>
             </div>
 
             <div className="mt-3 grid gap-3 md:grid-cols-3">
@@ -207,7 +271,7 @@ export function FinancingPlansSection() {
                 Discount rate (%) &mdash; Synchrony&rsquo;s charge to Red Cedar &mdash; never shown to customers
                 <input className={input} type="number" step="0.01" value={r.discountRatePct} placeholder="6.1" onChange={(e) => edit(index, { discountRatePct: e.target.value })} />
                 <span className="mt-1 block text-xs font-normal text-amber-900">
-                  Type it as a percent: 6.1 means 6.1%. The financing fee on a job is half of this rate, taken on the balance after the deposit.
+                  A percent: 6.1 means 6.1%. The fee on a job is half of this rate, taken on the balance after the deposit.
                 </span>
               </label>
             </div>
@@ -227,7 +291,7 @@ export function FinancingPlansSection() {
                 <textarea className={input} rows={6} value={r.terms} onChange={(e) => edit(index, { terms: e.target.value })} />
               </label>
             </div>
-          </div>
+          </CollapsibleCard>
         ))}
       </div>
 
@@ -245,6 +309,6 @@ export function FinancingPlansSection() {
         </button>
         {dirty && <span className="text-xs text-rce-muted">Unsaved changes &mdash; nothing above takes effect until you save.</span>}
       </div>
-    </section>
+    </CollapsibleCard>
   );
 }

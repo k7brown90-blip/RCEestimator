@@ -10,9 +10,10 @@
  *   treasury: Settings -> Treasury Save, Financials -> Month-end sweep "Sweep $X to Chase".
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { PriceBookCatalogPage } from "./PriceBookCatalogPage";
 import { BilledRateSection } from "./BilledRateSection";
 import { TreasurySection } from "./SettingsPage";
@@ -25,6 +26,8 @@ import { CRM_POWERS } from "../../../shared/crmPowers";
 import { OWNER_NO_GRANT, PIN_SESSION, PRINCIPAL_SESSION, ownerWith } from "../test/sessions";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-billed-rate", "settings-treasury"));
 
 const PRICE_REASON = CRM_POWERS.price_book_edit.reason;
 const TREASURY_REASON = CRM_POWERS.treasury.reason;

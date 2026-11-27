@@ -2,7 +2,7 @@
  * Settings -> "Agent webhooks" (work order agent-team, TC4; Kyle only).
  *
  * Pinned: each agent block (W2-C: Admin, Inventory, Facebook, Outreach, Scout, Research, CFO, NEC Coach) with its name, one line of
- * status and its address, or "No address — the agent will poll"; a block that is not set up starts folded behind "Set up" (the tests
+ * status and its address, or "No address — the agent will poll"; EVERY block starts folded on its agent row (Kyle, 2026-11-26: one shared fold, the same for every login) (the tests
  * below open every block first, through renderCard, except the ones that test the folding itself); "Edit address" saves through the ONE
  * owner-settings writer; "Turn off" and "Remove address" (the exit, with a confirm); the event-type table with its defaults (Admin for
  * everything, Inventory for material.used; message.team is NOT in it - the fan-out decides) and a re-point that is stored only when it
@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import {
   AgentWebhooksSection, ENV_ADDRESS_TEXT, ENV_REFUSED_TEXT, ENV_REMOVE_REASON, NO_ADDRESS_TEXT, WEBHOOKS_LOCK_REASON,
 } from "./AgentWebhooksSection";
@@ -20,18 +21,18 @@ import { AI_ADMIN_SESSION, OWNER_NO_GRANT, PIN_SESSION } from "../test/sessions"
 import { HUB_EVENT_TYPES, HUB_WEBHOOK_TARGET_IDS, HUB_WEBHOOK_TARGET_LABELS, WEBHOOK_VERIFY_RECIPE, isFanOutEventType } from "../../../shared/hub/events";
 
 let watcher: MutationObserver | null = null;
-beforeEach(() => { watcher = null; });
+beforeEach(() => { watcher = null; openCards("settings-agent-webhooks"); });
 afterEach(() => { watcher?.disconnect(); vi.restoreAllMocks(); });
 
 /**
- * Render the card. A block that is not set up starts FOLDED behind its "Set up" button (W2-C), so by default the test opens each one as it
- * appears, the way a person would click it; pass autoOpen false to test the folding itself.
+ * Render the card. A block that is not set up starts FOLDED (the one shared fold, remembered per agent), so by default the test opens each one
+ * as it appears, the way a person would click its row; pass autoOpen false to test the folding itself.
  */
 function renderCard(autoOpen = true) {
   const view = renderWithProviders(<AgentWebhooksSection />);
   if (autoOpen) {
     const click = () => {
-      for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>("button[aria-expanded=false]"))) if (b.textContent === "Set up") fireEvent.click(b);
+      for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>("[data-testid^='webhook-target-'] > h3 > button[aria-expanded=false]"))) fireEvent.click(b);
     };
     watcher = new MutationObserver(click);
     watcher.observe(document.body, { childList: true, subtree: true, attributes: true });
@@ -165,7 +166,7 @@ describe("AgentWebhooksSection when Admin's address comes from Railway (HUB_AGEN
     expect(ENV_REMOVE_REASON).toBe("This address comes from HUB_AGENT_WEBHOOK_URL in Railway — remove it there, or press Turn off to stop sending.");
     // The Turn off the reason points at is live.
     expect(btn(screen.getByTestId("webhook-target-admin"), "Turn off").disabled).toBe(false);
-    expect(screen.getByText(/Admin uses\s+HUB_AGENT_WEBHOOK_URL from Railway when no address is saved here/)).toBeTruthy();
+    // (Kyle, 2026-11-26, "one line each": the card's long intro that also said this is gone; the address line above says it for Admin.)
   });
 
   it("with an address also saved, the Remove confirm says the Railway address takes over", async () => {
@@ -518,7 +519,9 @@ describe("AgentWebhooksSection: one block per agent that can hear a team chat (W
     for (const id of ["research", "cfo", "nec_coach"]) expect(status(id)).toBe("Not set up");
   });
 
-  it("folds a block that is not set up behind 'Set up' (never hides it) and opens configured ones; Show / Hide settings toggles either", async () => {
+  // Kyle, 2026-11-26 ("Fold each webhook agent" / "All folded"): EVERY block starts folded, set up or not, the same for every login;
+  // a click on the agent's row opens it and the choice is remembered. (Superseded: "a block that is set up starts open".)
+  it("starts every block folded behind its agent row, set up or not, and a click on the row toggles either; the choice is remembered per agent", async () => {
     show(value({
       targets: [
         { id: "admin", url: "https://a.example.com/h", enabled: true, headers: [], signingSecret: null, secretSource: "env" },
@@ -527,31 +530,55 @@ describe("AgentWebhooksSection: one block per agent that can hear a team chat (W
       ],
     }), PIN_SESSION, NO_ENV, false);
     await waitFor(() => expect(screen.getByTestId("webhook-status-admin").textContent).toBe("On — signed"));
-    // Admin is set up: open, its controls are there and its button says Hide settings.
-    expect(btn(screen.getByTestId("webhook-target-admin"), "Edit address")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Hide Admin settings" }).textContent).toBe("Hide settings");
-    // CFO is not set up: folded, with a Set up button, and no controls until it is pressed.
+    // Admin is set up and CFO is not: BOTH start folded, with no controls until the row is clicked.
+    expect(within(screen.getByTestId("webhook-target-admin")).queryByRole("button", { name: "Edit address" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Admin" })).toHaveAttribute("aria-expanded", "false");
     const cfo = screen.getByTestId("webhook-target-cfo");
     expect(within(cfo).queryByRole("button", { name: "Edit address" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Set up CFO settings" }).textContent).toBe("Set up");
-    fireEvent.click(screen.getByRole("button", { name: "Set up CFO settings" }));
+    expect(screen.getByRole("button", { name: "CFO" })).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "CFO" }));
     expect(btn(screen.getByTestId("webhook-target-cfo"), "Edit address")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Hide CFO settings" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Hide CFO settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "CFO" }));
     expect(within(screen.getByTestId("webhook-target-cfo")).queryByRole("button", { name: "Edit address" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Set up CFO settings" })).toBeTruthy();
-    // A configured block can be folded by hand too, and comes back as Show settings.
-    fireEvent.click(screen.getByRole("button", { name: "Hide Admin settings" }));
-    expect(within(screen.getByTestId("webhook-target-admin")).queryByRole("button", { name: "Edit address" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Show Admin settings" }).textContent).toBe("Show settings");
+    // A configured block opens on a click, and what the person did is remembered for that agent.
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    expect(btn(screen.getByTestId("webhook-target-admin"), "Edit address")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Admin" })).toHaveAttribute("aria-expanded", "true");
+    expect(localStorage.getItem("rce.card.settings-webhook-admin")).toBe("1");
   });
 
-  it("says who hears a team chat, where @mentions fit, and prints the receiver's signature recipe", async () => {
+  // Kyle, 2026-11-26 ("Fold each webhook agent"): the per-agent fold works the same for every login and is never forced open.
+  it("a login that is not Kyle sees every agent block folded too, with the reason on the card", async () => {
+    show(value(), OWNER_NO_GRANT, NO_ENV, false);
+    expect((await screen.findByTestId("agent-webhooks-locked")).textContent).toBe(WEBHOOKS_LOCK_REASON);
+    for (const id of HUB_WEBHOOK_TARGET_IDS) {
+      expect(within(screen.getByTestId(`webhook-target-${id}`)).queryByRole("button", { name: "Edit address" })).toBeNull();
+    }
+    // Opening one shows its controls greyed.
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    expect(btn(screen.getByTestId("webhook-target-admin"), "Edit address").disabled).toBe(true);
+  });
+
+  // Kyle, 2026-11-26: events not being sent (no address OR no signing secret) is a live warning that opens the folded card by itself.
+  it("an agent with an address but no signing secret puts the warning on the folded card's row and opens it by itself", async () => {
+    localStorage.setItem("rce.card.settings-agent-webhooks", "0");
+    show(value({
+      targets: [
+        { id: "admin", url: "https://a.example.com/h", enabled: true, headers: [], signingSecret: null, secretSource: "env" },
+        { id: "cfo", url: "https://cfo.example.com/h", enabled: true, headers: [], signingSecret: null, secretSource: "none" },
+        ...HUB_WEBHOOK_TARGET_IDS.filter((id) => id !== "admin" && id !== "cfo").map((id) => ({ id, url: null, enabled: true })),
+      ],
+    }), PIN_SESSION, { urlSet: true, secretSet: true, adminEnvUrlSet: false, adminEnvUrlRefused: false }, false);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Agent webhooks" })).toHaveAttribute("aria-expanded", "true"));
+    expect(screen.getByText(/CFO: address set, no signing secret — nothing is sent/)).toBeTruthy();
+    expect(screen.queryByText(/Admin's events are not being sent/)).toBeNull();
+  });
+
+  it("says who hears a team chat and prints the receiver's signature recipe", async () => {
     show(value(), PIN_SESSION, NO_ENV, false);
-    const note = await screen.findByTestId("agent-webhooks-fan-out-note");
-    expect(note.textContent).toContain("Every agent whose key can read a Team, group or crew chat gets each new message");
-    expect(note.textContent).toContain("@Mentions say who should answer");
-    expect(note.textContent).toContain("with no mention, Admin answers");
+    // Kyle, 2026-11-26 ("one line each"): the separate fan-out note is gone; the routing table's own line says team chats are not listed.
+    await screen.findByTestId("agent-webhooks-recipe");
+    expect(document.body.textContent).toContain("Team, group and crew-chat messages are not listed: they go to every agent that can read the conversation.");
     const recipe = screen.getByTestId("agent-webhooks-recipe");
     expect(recipe.textContent).toContain(WEBHOOK_VERIFY_RECIPE);
     expect(WEBHOOK_VERIFY_RECIPE).toContain('cut it at the LAST occurrence of ,"timestamp":');
@@ -608,7 +635,7 @@ describe("AgentWebhooksSection: one block per agent that can hear a team chat (W
 });
 
 describe("AgentWebhooksSection when the settings fail to load (W2-C review)", () => {
-  it("shows every block open with its controls greyed and the reason, plus a visible banner - never eight bare names", async () => {
+  it("shows a visible banner, and each block opens to its controls greyed with the reason - never eight bare names", async () => {
     vi.spyOn(api, "session").mockResolvedValue(PIN_SESSION);
     vi.spyOn(api, "hubEventsConfig").mockResolvedValue(NO_ENV);
     vi.spyOn(api, "hubEvents").mockResolvedValue({ events: [], nextBefore: null });
@@ -616,6 +643,8 @@ describe("AgentWebhooksSection when the settings fail to load (W2-C review)", ()
     renderCard(false);
     expect((await screen.findByTestId("agent-webhooks-load-failed")).textContent).toContain("Agent webhooks could not be loaded.");
     for (const id of HUB_WEBHOOK_TARGET_IDS) {
+      // Folded by default (nothing is forced open): click the agent's row, then its controls are there, greyed with the reason.
+      fireEvent.click(within(screen.getByTestId(`webhook-target-${id}`)).getAllByRole("button")[0]);
       const block = screen.getByTestId(`webhook-target-${id}`);
       const edit = btn(block, "Edit address");
       expect(edit.disabled).toBe(true);

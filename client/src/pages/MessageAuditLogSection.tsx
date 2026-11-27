@@ -1,23 +1,31 @@
 /**
  * Settings -> "Message audit log" (work order agent-team, U4; Kyle only). The read-only record of what the
  * Messages hub did with every draft and every text, with a "Blocked texts" filter for the ones the CRM
- * refused to send. Click path from the Dashboard: left nav "Settings" -> "Message audit log" -> Show:
- * "Blocked texts" (three clicks). The list itself is components/MessageAuditLog.tsx, which the Thread
- * drawer's "Audit" button shows for one conversation.
+ * refused to send. Click path from the Dashboard: left nav "Settings" -> click the "Message audit log" row to
+ * open it -> Show: "Blocked texts" (three clicks). The list shows the newest 20 first (Kyle, 2026-11-26, "Shorter
+ * logs") and "Show older" does the rest. The list itself is components/MessageAuditLog.tsx, which the Thread
+ * drawer's "Audit" button shows for one conversation (it keeps its own full-length list).
  */
-import { MessageAuditLog } from "../components/MessageAuditLog";
+import { CollapsibleCard } from "../components/CollapsibleCard";
+import { AUDIT_LOCK_REASON, MessageAuditLog } from "../components/MessageAuditLog";
+import { useIsKyle, useSession } from "../lib/session";
+
+/** Rows the Message audit log card shows before "Show older". */
+export const AUDIT_FIRST_ROWS = 20;
 
 export function MessageAuditLogSection() {
+  const session = useSession();
+  const isKyle = useIsKyle();
+  const allowed = isKyle && session?.kind !== "ai-admin";
   return (
-    <section className="card mt-5 p-6" aria-label="Message audit log section">
-      <h2 className="text-lg font-semibold">Message audit log</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        What the Messages hub did with each AI draft and each text: approved, edited, rejected, sent, held or blocked. Pick "Blocked texts"
-        to see every text the CRM refused to send and why. Read-only: nothing here can be changed or removed.
-      </p>
-      <div className="mt-4">
-        <MessageAuditLog />
-      </div>
-    </section>
+    <CollapsibleCard
+      id="settings-message-audit-log"
+      title="Message audit log"
+      aria-label="Message audit log section"
+      subtitle="A read-only record of what the Messages hub did with each AI draft and each text, with a Blocked texts filter for texts the CRM refused to send."
+      summary={allowed ? "Read-only record" : AUDIT_LOCK_REASON}
+    >
+      <MessageAuditLog firstRows={AUDIT_FIRST_ROWS} />
+    </CollapsibleCard>
   );
 }

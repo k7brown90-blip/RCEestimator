@@ -3,8 +3,8 @@
  * sent, or kept, for the AI agents (an estimate was opened or signed, a payment came in, a lead
  * arrived, a job was completed, material was used, a team message was posted), and the Resend button.
  *
- * Click path from the Dashboard: left nav "Settings" -> scroll to "Agent events", directly under
- * "Agent keys" (two clicks).
+ * Click path from the Dashboard: left nav "Settings" -> click the "Agent events" row to open it (the cards start
+ * folded; it opens by itself while events are not being sent). Two clicks.
  *
  *   * Filter chips: All / Delivered / Retrying / Dead / No URL, an Event-type dropdown and an Agent
  *     dropdown (All agents, then each agent that has a webhook: the same log filtered to one webhook).
@@ -13,6 +13,8 @@
  *     and "Resend".
  *   * A banner says when no receiving address is set (events are KEPT, and Resend delivers them once
  *     it is) and when Admin has no signing secret (nothing is sent until it does).
+ *   * The log shows the newest 20 rows at first (Kyle, 2026-11-26, "Shorter logs"); "Load older events" shows the rest of
+ *     the rows already loaded, then fetches the next page.
  *   * "Resend" is on every row. On a Delivered row it is greyed with its reason (the agents drop a
  *     repeat of the same event, so it would do nothing); on a test event it is greyed (a test is never
  *     sent again); on Dead, Retrying and No URL rows it is live.
@@ -29,6 +31,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { CollapsibleCard } from "../components/CollapsibleCard";
 import { useCan, useSession, useSessionFailed } from "../lib/session";
 import type { HubEventView } from "../lib/types";
 import { AGENT_KEYS_AI_ADMIN_REASON } from "../../../shared/agentScopes";
@@ -73,6 +76,8 @@ const typeLabel = (type: string): string =>
 
 /** Rows to show without paging in the small per-webhook log. */
 export const WEBHOOK_LOG_ROWS = 5;
+/** Rows the Agent events card shows before "Load older events" (Kyle, 2026-11-26: "Shorter logs"). */
+export const EVENTS_FIRST_ROWS = 20;
 
 export interface AgentEventsTableProps {
   status?: string;
@@ -86,10 +91,12 @@ export interface AgentEventsTableProps {
   ready: boolean;
   /** Shown in place of "No events yet." */
   emptyText?: string;
+  /** Show only this many rows at first; "Load older events" then reveals the rest of what is loaded before it fetches more. */
+  firstRows?: number;
 }
 
 /** The event table with Show attempts and Resend: used by the Agent events card and, filtered, under each webhook. */
-export function AgentEventsTable({ status = "all", type = "", target = "", limit, allowed, lockReason, ready, emptyText = "No events yet." }: AgentEventsTableProps) {
+export function AgentEventsTable({ status = "all", type = "", target = "", limit, allowed, lockReason, ready, emptyText = "No events yet.", firstRows }: AgentEventsTableProps) {
   const queryClient = useQueryClient();
   const [older, setOlder] = useState<HubEventView[]>([]);
   const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined);
@@ -97,6 +104,8 @@ export function AgentEventsTable({ status = "all", type = "", target = "", limit
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // How many of the loaded rows are on screen: `firstRows` until "Load older events" reveals the rest.
+  const [visible, setVisible] = useState<number>(firstRows ?? Number.POSITIVE_INFINITY);
 
   const filter = { status, type, ...(target ? { target } : {}), ...(limit ? { limit } : {}) };
   const key = ["hubEvents", status, type, target, limit ?? 0] as const;
@@ -107,14 +116,22 @@ export function AgentEventsTable({ status = "all", type = "", target = "", limit
     setOlder([]);
     setOlderCursor(undefined);
     setOpen(null);
-  }, [status, type, target]);
+    setVisible(firstRows ?? Number.POSITIVE_INFINITY);
+  }, [status, type, target, firstRows]);
 
-  const events = [...(data?.events ?? []), ...older];
+  const loadedEvents = [...(data?.events ?? []), ...older];
+  const events = loadedEvents.slice(0, visible);
+  const hiddenLoaded = loadedEvents.length - events.length;
   const nextBefore = olderCursor === undefined ? data?.nextBefore ?? null : olderCursor;
   const known = data !== undefined;
   const loadFailed = loadError !== null && loadError !== undefined;
 
   async function loadOlder() {
+    // First the rows already loaded but not shown; only when all of them are on screen, the next page from the server.
+    if (hiddenLoaded > 0) {
+      setVisible(Number.POSITIVE_INFINITY);
+      return;
+    }
     if (!nextBefore) return;
     setError(null);
     try {
@@ -248,7 +265,7 @@ export function AgentEventsTable({ status = "all", type = "", target = "", limit
         </table>
       </div>
 
-      {allowed && !limit && nextBefore && (
+      {allowed && !limit && (hiddenLoaded > 0 || nextBefore) && (
         <button type="button" className="btn btn-secondary mt-3" onClick={() => void loadOlder()}>Load older events</button>
       )}
     </>
@@ -270,13 +287,26 @@ export function AgentEventsSection() {
 
   const { data: config } = useQuery({ queryKey: ["hubEventsConfig"], queryFn: () => api.hubEventsConfig(), enabled: ready });
 
+  // The folded row says whether events are going out; "no address" or "no secret" is a live warning and opens the card by itself.
+  const notSent = allowed && config !== undefined && (!config.urlSet || !config.secretSet);
+  const summary = !allowed
+    ? (lockReason ?? undefined)
+    : config === undefined
+      ? "Loading…"
+      : !config.urlSet ? "Not sent: no receiving address — events are being kept"
+        : !config.secretSet ? "Not sent: no signing secret"
+          : "Events are being sent";
+
   return (
-    <section className="card mt-5 p-6" aria-label="Agent events">
-      <h2 className="text-lg font-semibold">Agent events</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        Every signed message the CRM sends the AI agents: an estimate opened or signed, a payment recorded, a new lead, a job completed,
-        material used, a team message. Each row says only what happened and to which record, never a name or contact detail.
-      </p>
+    <CollapsibleCard
+      id="settings-agent-events"
+      title="Agent events"
+      aria-label="Agent events"
+      attention={notSent}
+      // Each row says only what happened and to which record, never a name or contact detail.
+      subtitle="Every signed event the CRM sends the AI agents, with Resend for any that did not arrive."
+      summary={<span className={notSent ? "font-semibold text-red-800" : undefined}>{summary}</span>}
+    >
 
       {!allowed && lockReason && (
         <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="agent-events-locked">
@@ -334,7 +364,7 @@ export function AgentEventsSection() {
         </label>
       </div>
 
-      <AgentEventsTable status={status} type={type} target={target} allowed={allowed} lockReason={lockReason} ready={ready} />
-    </section>
+      <AgentEventsTable status={status} type={type} target={target} allowed={allowed} lockReason={lockReason} ready={ready} firstRows={EVENTS_FIRST_ROWS} />
+    </CollapsibleCard>
   );
 }

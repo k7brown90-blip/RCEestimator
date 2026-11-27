@@ -9,11 +9,12 @@
  * prefilling scopes and thread limits; the show-once dialog, whose secret never enters the React
  * Query cache and is gone when it closes; Rotate, Revoke, Edit and "Revoked keys (n)".
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { AgentKeysSection } from "./AgentKeysSection";
 import { api } from "../lib/api";
 import type { AgentAccessMode, AgentKeyView, AgentKeysData } from "../lib/types";
@@ -22,6 +23,8 @@ import { AGENT_KEYS_AI_ADMIN_REASON } from "../../../shared/agentScopes";
 import { CRM_POWERS } from "../../../shared/crmPowers";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-agent-keys"));
 
 // A helper rather than `mode: "on"` literals: tests/visitModes.test.ts scans the client for that spelling
 // as a VISIT mode. These are the agent kill switch's modes.
@@ -398,10 +401,13 @@ describe("Rotate key on a key that cannot be rotated", () => {
     expect(screen.getByTestId("rotate-reason-e").textContent).toBe(reason);
   });
 
-  it("a replaced (retired) key says the same, and an active key has no reason line", async () => {
+  // Kyle, 2026-11-26 ("Tuck away replaced keys"): a replaced (retired) key no longer sits in the main table, so it has no Rotate button
+  // and no reason line there; it is listed, with its Replaced — stopped status, in the folded Revoked list (see "Revoked keys" below).
+  it("a replaced (retired) key is not in the main table, and an active key has no reason line", async () => {
     show(data({ keys: [key({ id: "r", name: "Retired one", status: "retired", retiresAt: "2026-11-20T10:00:00-06:00" }), key({ id: "ok", name: "Fine" })] }));
-    await screen.findByText("Retired one");
-    expect(screen.getByTestId("rotate-reason-r")).toBeTruthy();
+    await screen.findByText("Fine");
+    expect(screen.queryByTestId("agent-key-r")).toBeNull();
+    expect(screen.queryByTestId("rotate-reason-r")).toBeNull();
     expect(screen.queryByTestId("rotate-reason-ok")).toBeNull();
   });
 });

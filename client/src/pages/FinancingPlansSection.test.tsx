@@ -7,14 +7,17 @@
  * is looking, not swallowed.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { FinancingPlansSection } from "./FinancingPlansSection";
 import { api } from "../lib/api";
 import type { FinancingPlan } from "../../../shared/financing";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-financing-plans"));
 
 const plans = (): FinancingPlan[] => [
   {
@@ -38,11 +41,19 @@ function show(list = plans()) {
 
 const card = (i: number) => within(screen.getByTestId(`financing-plan-${i}`));
 
+/** Every plan starts folded to its "Plan NNN — description" row (Kyle, 2026-11-26): click that row to open it. */
+function openPlan(i: number) {
+  const header = within(screen.getByTestId(`financing-plan-${i}`)).getAllByRole("button")[0];
+  if (header.getAttribute("aria-expanded") !== "true") fireEvent.click(header);
+}
+
 describe("FinancingPlansSection", () => {
   it("lists the plans in order and labels the discount rate as Red Cedar's cost, never shown to customers", async () => {
     show();
     expect(await screen.findByText(/Plan 965/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Financing plans (Synchrony)" })).toBeTruthy();
+    openPlan(0);
+    openPlan(1);
     expect(screen.getAllByText(/Synchrony.s charge to Red Cedar/).length).toBe(2);
     expect(screen.getAllByText(/never shown to customers/).length).toBe(2);
     expect((card(0).getByDisplayValue("6.1") as HTMLInputElement).type).toBe("number");
@@ -56,17 +67,19 @@ describe("FinancingPlansSection", () => {
   it("Save is greyed WITH its reason until something changes", async () => {
     show();
     await screen.findByText(/Plan 965/);
+    openPlan(0);
     const saveBtn = screen.getByRole("button", { name: "Save financing plans" }) as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
     expect(saveBtn.title).toBe("Nothing changed yet");
     fireEvent.change(card(0).getByDisplayValue("6.1"), { target: { value: "6.4" } });
     expect(saveBtn.disabled).toBe(false);
-    expect(screen.getByText(/Unsaved changes/)).toBeTruthy();
+    expect(screen.getAllByText(/Unsaved changes/).length).toBeGreaterThan(0);
   });
 
   it("Move down reorders, and Save sends the plans in that order with numbers parsed", async () => {
     const { save } = show();
     await screen.findByText(/Plan 965/);
+    openPlan(0);
     fireEvent.click(card(0).getByRole("button", { name: "Move down" }));
     fireEvent.click(screen.getByRole("button", { name: "Save financing plans" }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
@@ -83,6 +96,8 @@ describe("FinancingPlansSection", () => {
   it("the first plan cannot move up and the last cannot move down - greyed with the reason", async () => {
     show();
     await screen.findByText(/Plan 965/);
+    openPlan(0);
+    openPlan(1);
     const up = card(0).getByRole("button", { name: "Move up" }) as HTMLButtonElement;
     const down = card(1).getByRole("button", { name: "Move down" }) as HTMLButtonElement;
     expect(up.disabled).toBe(true);
@@ -94,6 +109,7 @@ describe("FinancingPlansSection", () => {
   it("Remove takes a plan out of the list (held until Save); Discard changes brings it back", async () => {
     const { save } = show();
     await screen.findByText(/Plan 965/);
+    openPlan(0);
     fireEvent.click(card(0).getByRole("button", { name: "Remove" }));
     expect(screen.queryByText(/Plan 965/)).toBeNull();
     expect(save).not.toHaveBeenCalled();
@@ -105,6 +121,7 @@ describe("FinancingPlansSection", () => {
   it("switching a plan off says so on the plan and saves active: false", async () => {
     const { save } = show();
     await screen.findByText(/Plan 965/);
+    openPlan(0);
     fireEvent.click(card(0).getByRole("checkbox", { name: /Offer to customers/ }));
     expect(card(0).getByText(/Off . customers do not see it/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save financing plans" }));
@@ -120,14 +137,40 @@ describe("FinancingPlansSection", () => {
     expect((card(2).getByRole("checkbox", { name: /Offer to customers/ }) as HTMLInputElement).checked).toBe(false);
   });
 
+  // Kyle, 2026-11-26 ("Fold each financing plan"): each plan folds to its "Plan NNN — description" row, and an unsaved edit survives the fold.
+  it("every plan starts folded to its Plan NNN row; a click opens it", async () => {
+    show();
+    await screen.findByText(/Plan 965/);
+    expect(card(0).queryByText("Plan number")).toBeNull();
+    expect(card(0).getByRole("button", { name: /Plan 965 — 11.99% APR until paid in full/ })).toHaveAttribute("aria-expanded", "false");
+    expect(card(1).getByRole("button", { name: /Plan 924/ })).toHaveAttribute("aria-expanded", "false");
+    openPlan(0);
+    expect(card(0).getByText("Plan number")).toBeTruthy();
+    expect(card(1).queryByText("Plan number")).toBeNull();
+  });
+
+  it("an unsaved edit survives folding the plan, and the folded row says it was edited and not saved", async () => {
+    show();
+    await screen.findByText(/Plan 965/);
+    openPlan(0);
+    fireEvent.change(card(0).getByDisplayValue("6.1"), { target: { value: "6.4" } });
+    fireEvent.click(card(0).getAllByRole("button")[0]); // fold it again
+    expect(card(0).queryByText("Plan number")).toBeNull();
+    expect(card(0).getByText(/Edited . not saved/)).toBeTruthy();
+    expect(card(1).queryByText(/Edited . not saved/)).toBeNull();
+    openPlan(0);
+    expect(card(0).getByDisplayValue("6.4")).toBeTruthy();
+  });
+
   it("shows the server's refusal beside the buttons and stays unsaved", async () => {
     const { save } = show();
     save.mockRejectedValueOnce(new Error("Plan 965: Discount rate is 0.061 - that looks like a fraction. Type it as a percent (for example 6.1)."));
     await screen.findByText(/Plan 965/);
+    openPlan(0);
     fireEvent.change(card(0).getByDisplayValue("6.1"), { target: { value: "0.061" } });
     fireEvent.click(screen.getByRole("button", { name: "Save financing plans" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("looks like a fraction");
-    expect(screen.getByText(/Unsaved changes/)).toBeTruthy();
+    expect(screen.getAllByText(/Unsaved changes/).length).toBeGreaterThan(0);
   });
 });

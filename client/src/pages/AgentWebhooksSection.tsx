@@ -5,11 +5,13 @@
  * secret, a test button and its delivery log, plus a table saying which agent gets which routed event type.
  * Claude Code has no block: it is woken by the GitHub dispatch, not a webhook.
  *
- * Click path from the Dashboard: left nav "Settings" -> scroll to "Agent webhooks", under "Agent events"
- * (two clicks). Every control below sits on that agent's own block. Each block's header says the agent and one
- * line of status ("Not set up", "On — signed", "Off", "Address set, no signing secret — nothing is sent"); a block
- * that is not set up starts folded behind a "Set up" button (a folded block shows "Show settings", an open one
- * "Hide settings"), and a locked session sees every block open with its controls greyed and the reason printed.
+ * Click path from the Dashboard: left nav "Settings" -> click the "Agent webhooks" row to open it (the cards start
+ * folded; it opens by itself while events are not being sent), then click the agent's row (two to three clicks). Every
+ * control below sits on that agent's own block. Each block's header row says the agent and one line of status ("Not
+ * set up", "On — signed", "Off", "Address set, no signing secret — nothing is sent"). Each block folds the same way for
+ * EVERY login (Kyle, 2026-11-26, "Fold each webhook agent" / "All folded"): every block starts folded, set up or not, the
+ * choice is remembered per agent, and nothing is forced open. A locked session sees the reason on the card's own
+ * row and inside, with the controls greyed.
  *
  * Which agent hears a Team, group or crew-chat message is NOT set here (W2, Kyle 2026-11-23): every agent whose key
  * can read that conversation gets each new message, with its full text, its @mentions and whether it is expected to
@@ -40,6 +42,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { CollapsibleCard } from "../components/CollapsibleCard";
+import { UnsavedNote } from "../components/UnsavedNote";
 import { useIsKyle, useSession, useSessionFailed } from "../lib/session";
 import type { AgentWebhooksSave, AgentWebhooksValue, AgentWebhookTargetView } from "../lib/types";
 import { AgentEventsTable, WEBHOOK_LOG_ROWS } from "./AgentEventsSection";
@@ -65,7 +69,8 @@ export const STATUS_NOT_SET_UP = "Not set up";
 export const STATUS_ON_SIGNED = "On — signed";
 export const STATUS_OFF = "Off";
 export const STATUS_NO_SECRET = "Address set, no signing secret — nothing is sent";
-export const TEAM_FAN_OUT_NOTE = "Every agent whose key can read a Team, group or crew chat gets each new message there, with its text. @Mentions say who should answer (with no mention, Admin answers). Customer messages and the other events below go to the agent named in the table.";
+// Team, group and crew-chat messages go to every agent whose key can read that conversation, with the text; @Mentions say who
+// should answer (with no mention, Admin answers). The routing table below says so in one line, so there is no separate note.
 
 const EMPTY: AgentWebhooksValue = {
   targets: HUB_WEBHOOK_TARGET_IDS.map((id) => ({ id, url: null, enabled: true })),
@@ -103,8 +108,6 @@ export function AgentWebhooksSection() {
   const [headerForm, setHeaderForm] = useState<{ id: HubWebhookTargetId; kind: "add" | "edit"; name: string; value: string } | null>(null);
   const [headerError, setHeaderError] = useState<string | null>(null);
   const [tests, setTests] = useState<Partial<Record<HubWebhookTargetId, TestState>>>({});
-  /** A block the person folded or opened by hand; until they do, a block that is not set up is folded. */
-  const [openBy, setOpenBy] = useState<Partial<Record<HubWebhookTargetId, boolean>>>({});
 
   const targetOf = (id: HubWebhookTargetId): AgentWebhookTargetView => value.targets.find((t) => t.id === id) ?? { id, url: null, enabled: true };
   const headersOf = (id: HubWebhookTargetId) => targetOf(id).headers ?? [];
@@ -230,16 +233,54 @@ export function AgentWebhooksSection() {
     }
   }
 
+  // The folded row: how many agents are sending, or the live warning (no address / no signing secret) that opens the card by itself.
+  const sending = HUB_WEBHOOK_TARGET_IDS.filter((id) => {
+    const t = targetOf(id);
+    const hasAddress = t.url !== null || (id === "admin" && config?.adminEnvUrlSet === true);
+    const secretSource = t.secretSource ?? (id === "admin" && config?.secretSet === true ? "env" : "none");
+    return t.enabled && hasAddress && secretSource !== "none";
+  }).length;
+  // Admin's own line (the Railway address / secret), and every OTHER agent that has an address and is on but has no signing secret:
+  // its events are kept, not sent (STATUS_NO_SECRET). Both are live warnings, so the folded card says so and opens by itself.
+  const adminNotSent = allowed && config !== undefined && (!config.urlSet || !config.secretSet);
+  const noSecretNames = allowed && known
+    ? HUB_WEBHOOK_TARGET_IDS.filter((id) => {
+      const t = targetOf(id);
+      const hasAddress = t.url !== null || (id === "admin" && config?.adminEnvUrlSet === true);
+      const secretSource = t.secretSource ?? (id === "admin" && config?.secretSet === true ? "env" : "none");
+      return t.enabled && hasAddress && secretSource === "none" && !(id === "admin" && adminNotSent);
+    }).map((id) => HUB_WEBHOOK_TARGET_LABELS[id])
+    : [];
+  const notSent = adminNotSent || noSecretNames.length > 0;
+  const warnings = [
+    adminNotSent ? "Admin's events are not being sent" : null,
+    noSecretNames.length > 0 ? `${noSecretNames.join(", ")}: address set, no signing secret — nothing is sent` : null,
+  ].filter((w): w is string => w !== null);
+  // Typed and not saved: an address being edited, or a header's name / value being entered.
+  const unsaved =
+    (editing !== null && draft.trim() !== (targetOf(editing).url ?? "")) ||
+    (headerForm !== null && (headerForm.value !== "" || (headerForm.kind === "add" && headerForm.name.trim() !== "")));
+  const cardSummary = !allowed
+    ? WEBHOOKS_LOCK_REASON
+    : !known
+      ? (loadFailed ? "Could not be loaded" : "Loading…")
+      : `${sending} of ${HUB_WEBHOOK_TARGET_IDS.length} agents sending${warnings.length > 0 ? ` — ${warnings.join("; ")}` : ""}`;
+  const secretOnScreen = Object.keys(shown).length > 0;
+
   return (
-    <section className="card mt-5 p-6" aria-label="Agent webhooks">
-      <h2 className="text-lg font-semibold">Agent webhooks</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        Where the signed agent events are sent. Each agent that listens has its own receiving address, its own signing secret and optional custom
-        headers. Admin signs with HUB_WEBHOOK_SECRET from Railway until it has a secret of its own; every other agent has none until you generate
-        one. With no address an event is kept in Agent events and the agent polls instead. Admin uses
-        HUB_AGENT_WEBHOOK_URL from Railway when no address is saved here. Claude Code has no webhook: it is woken another way.
-      </p>
-      <p className="mt-2 text-sm text-rce-muted" data-testid="agent-webhooks-fan-out-note">{TEAM_FAN_OUT_NOTE}</p>
+    <CollapsibleCard
+      id="settings-agent-webhooks"
+      title="Agent webhooks"
+      aria-label="Agent webhooks"
+      attention={notSent || unsaved}
+      // A signing secret is shown once, inline in its agent's block: the card refuses to fold while one is on screen.
+      lockOpen={secretOnScreen}
+      lockTitle="Press “I've saved it” first — the secret is shown only once."
+      // Admin signs with HUB_WEBHOOK_SECRET from Railway until it has a secret of its own and uses HUB_AGENT_WEBHOOK_URL when no address
+      // is saved here; with no address an event is kept in Agent events and the agent polls. Claude Code has no webhook.
+      subtitle="Where each agent's signed events are sent: its receiving address, signing secret and custom headers (Claude Code has no webhook; it is woken another way)."
+      summary={<><span className={notSent ? "font-semibold text-red-800" : undefined}>{cardSummary}</span><UnsavedNote show={unsaved} /></>}
+    >
       <details className="mt-2 text-xs text-rce-muted" data-testid="agent-webhooks-recipe">
         <summary className="cursor-pointer font-semibold">How a receiver checks an event</summary>
         <p className="mt-1">{WEBHOOK_VERIFY_RECIPE}</p>
@@ -291,36 +332,35 @@ export function AgentWebhooksSection() {
           const form = headerForm?.id === id ? headerForm : null;
           // One line of status for the block's header (never a secret or an address).
           const status = !t.enabled ? STATUS_OFF : !hasAddress ? STATUS_NOT_SET_UP : secretSource === "none" ? STATUS_NO_SECRET : STATUS_ON_SIGNED;
-          // A locked session sees every block open (greyed controls, never hidden); otherwise a block that is not set up starts folded.
-          // Also open while the setting is unknown (loading or failed to load): every control shows greyed with its reason, never hidden.
-          const defaultOpen = !allowed || !known ? true : status !== STATUS_NOT_SET_UP;
-          const isOpen = openBy[id] ?? defaultOpen;
           return (
-            <div key={id} className="rounded-md border border-rce-border p-3" data-testid={`webhook-target-${id}`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">{label}</span>
-                <span
-                  className={`rounded px-1.5 py-0.5 text-xs font-semibold ${status === STATUS_ON_SIGNED ? "bg-green-100 text-green-900" : status === STATUS_NO_SECRET ? "bg-amber-100 text-amber-900" : "bg-gray-200 text-gray-800"}`}
-                  data-testid={`webhook-status-${id}`}
-                >
-                  {!allowed || !known ? "" : status}
-                </span>
-                {!isEditing && isOpen && (
-                  <span className="mono break-all text-xs" data-testid={`webhook-address-${id}`}>
-                    {!allowed || !known ? "" : addressText}
-                  </span>
-                )}
-                {allowed && known && (
-                  <button
-                    type="button" className="btn btn-secondary ml-auto" aria-expanded={isOpen} aria-label={`${isOpen ? "Hide" : status === STATUS_NOT_SET_UP ? "Set up" : "Show"} ${label} settings`}
-                    onClick={() => setOpenBy((o) => ({ ...o, [id]: !isOpen }))}
+            // One fold for every login (Kyle, 2026-11-26, "Fold each webhook agent" / "All folded"): the shared CollapsibleCard. EVERY block
+            // starts folded, whether or not the agent is set up and whatever the login (a locked or still-loading card too: its reason is
+            // printed on the card above, and opening a block shows the controls greyed with it). The choice is remembered per agent, and
+            // nothing is forced open except a block with a one-time secret on screen.
+            <CollapsibleCard
+              key={id}
+              id={`settings-webhook-${id}`}
+              inner
+              lockOpen={once !== undefined}
+              lockTitle="Press “I've saved it” first — the secret is shown only once."
+              data-testid={`webhook-target-${id}`}
+              title={label}
+              summary={
+                allowed && known ? (
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-xs font-semibold ${status === STATUS_ON_SIGNED ? "bg-green-100 text-green-900" : status === STATUS_NO_SECRET ? "bg-amber-100 text-amber-900" : "bg-gray-200 text-gray-800"}`}
+                    data-testid={`webhook-status-${id}`}
                   >
-                    {isOpen ? "Hide settings" : status === STATUS_NOT_SET_UP ? "Set up" : "Show settings"}
-                  </button>
-                )}
-              </div>
-
-              {isOpen && (<>
+                    {status}
+                  </span>
+                ) : undefined
+              }
+            >
+              {!isEditing && (
+                <p className="mono break-all text-xs" data-testid={`webhook-address-${id}`}>
+                  {!allowed || !known ? "" : addressText}
+                </p>
+              )}
 
               {isEditing ? (
                 <form
@@ -433,8 +473,7 @@ export function AgentWebhooksSection() {
               <div className="mt-4 border-t border-rce-border pt-3" data-testid={`webhook-headers-${id}`}>
                 <h3 className="text-sm font-semibold">Custom headers</h3>
                 <p className="mt-1 text-xs text-rce-muted">
-                  Sent with every event to {label} (and every retry, Resend and test), beside X-RCE-Signature, X-RCE-Timestamp and X-RCE-Event-Id — for
-                  example Authorization: Bearer … . A value is stored encrypted and shown only as its last four characters.
+                  Sent with every event to {label}, for example Authorization: Bearer … ; a value is stored encrypted and shown only as its last four characters.
                 </p>
                 {headers.length === 0 && <p className="mt-2 text-xs text-rce-muted" data-testid={`webhook-headers-none-${id}`}>No custom headers.</p>}
                 <ul className="mt-2 grid gap-2">
@@ -532,8 +571,7 @@ export function AgentWebhooksSection() {
                   emptyText={`No events sent to ${label} yet.`}
                 />
               </div>
-              </>)}
-            </div>
+            </CollapsibleCard>
           );
         })}
       </div>
@@ -572,6 +610,6 @@ export function AgentWebhooksSection() {
           </tbody>
         </table>
       </div>
-    </section>
+    </CollapsibleCard>
   );
 }

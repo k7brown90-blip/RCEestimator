@@ -8,14 +8,17 @@
  * prices, and sends the number; a typed change throws the old preview away.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { BilledRateSection } from "./BilledRateSection";
 import { api } from "../lib/api";
 import type { BilledRateApplied, BilledRatePreview } from "../lib/api";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-billed-rate"));
 
 const preview = (over: Partial<BilledRatePreview> = {}): BilledRatePreview => ({
   currentRate: 100,
@@ -59,7 +62,7 @@ describe("BilledRateSection", () => {
 
   it("Preview and Apply are greyed WITH a reason when the box is empty, invalid, or the current rate", async () => {
     show(100);
-    await screen.findByText("$100.00 / hr");
+    await waitFor(() => expect(screen.getByTestId("billed-rate-current").textContent).toBe("$100.00 / hr"));
     expect(previewBtn().disabled).toBe(true);
     expect(previewBtn().title).toBe("Type the new hourly rate first.");
 
@@ -81,7 +84,7 @@ describe("BilledRateSection", () => {
 
   it("Preview lists what reprices, examples, and the rows it will leave alone and why", async () => {
     const { previewSpy } = show(100);
-    await screen.findByText("$100.00 / hr");
+    await waitFor(() => expect(screen.getByTestId("billed-rate-current").textContent).toBe("$100.00 / hr"));
     type("112.50");
     expect(previewBtn().disabled).toBe(false);
     fireEvent.click(previewBtn());
@@ -101,7 +104,7 @@ describe("BilledRateSection", () => {
 
   it("Apply needs a preview of that exact rate, then confirms and sends the number", async () => {
     const { applySpy } = show(100);
-    await screen.findByText("$100.00 / hr");
+    await waitFor(() => expect(screen.getByTestId("billed-rate-current").textContent).toBe("$100.00 / hr"));
     type("112.5");
     const applyBtn = () => screen.getByRole("button", { name: "Apply $112.50/hr to the price book" }) as HTMLButtonElement;
     expect(applyBtn().disabled).toBe(true);
@@ -127,7 +130,7 @@ describe("BilledRateSection", () => {
 
   it("changing the number throws the old preview away", async () => {
     show(100);
-    await screen.findByText("$100.00 / hr");
+    await waitFor(() => expect(screen.getByTestId("billed-rate-current").textContent).toBe("$100.00 / hr"));
     type("112.5");
     fireEvent.click(previewBtn());
     await screen.findByTestId("billed-rate-preview");
@@ -140,7 +143,7 @@ describe("BilledRateSection", () => {
     vi.spyOn(api, "billedRate").mockResolvedValue({ rate: 100 });
     vi.spyOn(api, "billedRatePreview").mockRejectedValue(new Error("The billed rate must be more than $0."));
     renderWithProviders(<BilledRateSection />);
-    await screen.findByText("$100.00 / hr");
+    await waitFor(() => expect(screen.getByTestId("billed-rate-current").textContent).toBe("$100.00 / hr"));
     type("110");
     fireEvent.click(previewBtn());
     expect(await screen.findByText("The billed rate must be more than $0.")).toBeTruthy();

@@ -3,9 +3,10 @@
  * to "Blocked texts" (when, reason, class, send type - never a phone), and greyed with the reason for anyone
  * but Kyle. The Thread drawer's "Audit" button shows the same list for one conversation.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { MessageAuditLogSection } from "./MessageAuditLogSection";
 import { AUDIT_LOCK_REASON } from "../components/MessageAuditLog";
 import { api } from "../lib/api";
@@ -13,6 +14,8 @@ import { AI_ADMIN_SESSION, OWNER_NO_GRANT, PIN_SESSION } from "../test/sessions"
 import type { AuditResponse } from "../../../shared/hub/views";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-message-audit-log"));
 
 const entry = (over: Partial<AuditResponse["entries"][number]> = {}): AuditResponse["entries"][number] => ({
   id: "a-1", at: "2026-11-21T18:00:00.000Z", actorKey: "owner", actorDisplay: "Kyle", action: "message_approved", actionLabel: "Approved",

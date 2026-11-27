@@ -9,10 +9,13 @@
  * only a hash.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useIsKyle } from "../lib/session";
+import { CollapsibleCard } from "../components/CollapsibleCard";
+import { UnsavedNote } from "../components/UnsavedNote";
+import { useSeededForm } from "../lib/useSeededForm";
 import type { AdminLoginStatus } from "../lib/types";
 
 const PASSWORD_MIN = 12;
@@ -26,15 +29,14 @@ export function AdminLoginSection() {
   // answers anyone else 403, so the buttons are greyed WITH the reason rather than left to fail.
   const isKyle = useIsKyle();
   const { data: status, isLoading } = useQuery({ queryKey: ["adminLogin"], queryFn: () => api.adminLogin() });
-  const [username, setUsername] = useState("");
+  // The username box follows the saved username until the person types in it (a typed, unsaved name is never overwritten).
+  const [username, setUsername, usernameDirty] = useSeededForm(status?.username ?? "", (x, y) => x.trim() === y.trim());
   const [password, setPassword] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Show the saved username in its box (the password is never sent back, so it stays empty).
-  useEffect(() => {
-    if (status?.username) setUsername(status.username);
-  }, [status?.username]);
+  // The password is never sent back, so it starts empty; anything typed in it is unsaved.
+  const unsaved = usernameDirty || password !== "";
 
   const configured = status?.configured === true;
   const enabled = status?.enabled === true;
@@ -92,13 +94,16 @@ export function AdminLoginSection() {
         : `Off — the AI admin cannot sign in as "${status?.username}" until you turn it on.`;
 
   return (
-    <section className="card mt-5 p-6" aria-label="AI admin login">
-      <h2 className="text-lg font-semibold">AI admin login</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        The AI admin's own sign-in, separate from your PIN (Kyle, 2026-11-15: "Its own login"). Your PIN keeps working
-        for you. The AI admin uses this username and password on the sign-in page, and stays signed in while it is in use.
-      </p>
-
+    <CollapsibleCard
+      id="settings-ai-admin-login"
+      title="AI admin login"
+      aria-label="AI admin login"
+      attention={unsaved}
+      // Kyle, 2026-11-15: "Its own login" - separate from his PIN, which keeps working for him. The AI admin uses this username
+      // and password on the sign-in page and stays signed in while it is in use.
+      subtitle="The AI admin's own username and password, separate from your PIN."
+      summary={<>{`${isLoading ? "Loading…" : !configured ? "Not set up" : enabled ? `On — signs in as ${status?.username}` : `Off — ${status?.username} cannot sign in`}${isKyle ? "" : ` — ${ONLY_KYLE}`}`}<UnsavedNote show={unsaved} /></>}
+    >
       <p
         className={`mt-4 text-sm font-semibold ${configured && enabled ? "text-green-800" : "text-rce-muted"}`}
         data-testid="admin-login-status"
@@ -182,6 +187,6 @@ export function AdminLoginSection() {
 
       {notice && <p className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900">{notice}</p>}
       {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
-    </section>
+    </CollapsibleCard>
   );
 }

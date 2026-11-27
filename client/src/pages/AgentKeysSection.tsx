@@ -2,8 +2,8 @@
  * Settings -> "Agent keys" (work order agent-team, K-U2). Where Kyle makes, edits, rotates and revokes
  * the keys the Grok agents and Claude Code use, and where he pauses or switches off every agent at once.
  *
- * Click path from the Dashboard: left nav "Settings" -> scroll to "Agent keys", directly under
- * "AI admin login" (two clicks).
+ * Click path from the Dashboard: left nav "Settings" -> click the "Agent keys" row to open it (the cards start
+ * folded; it opens by itself while the agents are paused or off). Two clicks.
  *
  *   * The top strip says "Agents: Running", "Writes paused" or "All agents off", with "Pause writes",
  *     "Turn all agents off" and "Resume agents" (each confirms). While not running, a red banner names
@@ -32,6 +32,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { CollapsibleCard } from "../components/CollapsibleCard";
 import { useCan, useSession, useSessionFailed } from "../lib/session";
 import type { AgentAccessMode, AgentKeyPatchInput, AgentKeyView, AgentKeysData } from "../lib/types";
 import {
@@ -49,8 +50,10 @@ const PEPPER_REASON = "Set AGENT_KEY_PEPPER in Railway first.";
 const WRITES_READ_ONLY_REASON = "Agent access is read-only — writes are refused until it is On";
 const WRITES_OFF_REASON = "Agent access is Off";
 const WRITES_REVOKED_REASON = "This key is revoked — it can no longer write";
+const WRITES_REPLACED_REASON = "This key was replaced — it can no longer write";
 // "Team posts publish immediately" (W2): the reasons it is greyed. A box that is already ticked can always be unticked.
 const PUBLISH_REVOKED_REASON = "This key is revoked — it can no longer post";
+const PUBLISH_REPLACED_REASON = "This key was replaced — it can no longer post";
 const PUBLISH_WRITES_OFF_REASON = "Allow writes is off for this key — it cannot post until that is ticked";
 const PUBLISH_ACCESS_REASON = "Agent access is not On — nothing an AI wrote is published until it is On";
 // W2 (Kyle 2026-11-23): a Team, group or crew post is published by the key's own box. Kyle 2026-11-24 (no check-ins): an email or text to a customer
@@ -271,8 +274,10 @@ export function AgentKeysSection() {
   const known = data !== undefined;
   const loadFailed = loadError !== null && loadError !== undefined;
   const access = data?.agentAccess ?? RUNNING;
-  const live = keys.filter((k) => k.status !== "revoked");
-  const revoked = keys.filter((k) => k.status === "revoked");
+  // Kyle, 2026-11-26 ("Tuck away replaced keys"): the main table holds only working keys. A key that was rotated out
+  // ("Replaced — stopped") joins the revoked ones in the folded list, which is the exit view for a key that no longer works.
+  const live = keys.filter((k) => k.status !== "revoked" && k.status !== "retired");
+  const revoked = keys.filter((k) => k.status === "revoked" || k.status === "retired");
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -436,14 +441,27 @@ export function AgentKeysSection() {
     </div>
   );
 
-  return (
-    <section className="card mt-5 p-6" aria-label="Agent keys">
-      <h2 className="text-lg font-semibold">Agent keys</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        The keys the AI agents use to reach the CRM, each limited to the scopes ticked. A key is shown once when it is made.
-        Revoke stops a key on its very next call. Rows are never deleted, because the activity log points at them.
-      </p>
+  // The folded row: the kill switch's state (a live warning while it is not Running) and how many keys work.
+  const accessWarning = !locked && known && access.mode !== "on";
+  const keysSummary = locked
+    ? (lockReason ?? "Agents: status hidden")
+    : !known
+      ? (loadFailed ? "Agents: status unknown" : "Loading…")
+      : `${MODE_TEXT[access.mode]} · ${live.length} key${live.length === 1 ? "" : "s"}`;
 
+  return (
+    <CollapsibleCard
+      id="settings-agent-keys"
+      title="Agent keys"
+      aria-label="Agent keys"
+      attention={accessWarning}
+      // A plaintext key is on screen only in the dialog: the card refuses to fold while it is open, so it cannot be lost to a fold.
+      lockOpen={shown !== null}
+      lockTitle="Press “I've saved it” first — the key is shown only once."
+      // Rows are never deleted, because the activity log points at them; Revoke stops a key on its very next call.
+      subtitle="The keys the AI agents use to reach the CRM, each limited to its ticked scopes, plus the switch that pauses or turns off every agent."
+      summary={<span className={accessWarning ? "font-semibold text-red-800" : undefined}>{keysSummary}</span>}
+    >
       {locked && lockReason && (
         <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="agent-keys-locked">
           {lockReason}
@@ -631,19 +649,27 @@ export function AgentKeysSection() {
 
       {revoked.length > 0 && (
         <details className="mt-4" data-testid="agent-revoked-keys">
-          <summary className="cursor-pointer text-sm font-semibold">Revoked keys ({revoked.length})</summary>
+          <summary className="cursor-pointer text-sm font-semibold">
+            {revoked.some((k) => k.status === "retired") ? `Revoked and replaced keys (${revoked.length})` : `Revoked keys (${revoked.length})`}
+          </summary>
           <ul className="mt-2 grid gap-1 text-sm">
-            {revoked.map((k) => (
+            {revoked.map((k) => {
+              const replaced = k.status === "retired";
+              const writesReason = replaced ? WRITES_REPLACED_REASON : WRITES_REVOKED_REASON;
+              const publishReason = replaced ? PUBLISH_REPLACED_REASON : PUBLISH_REVOKED_REASON;
+              return (
               <li key={k.id} className="rounded border border-rce-border px-3 py-2">
                 <span className="font-medium">{k.name}</span> <span className="mono text-xs">{k.displayPrefix}…</span>{" "}
-                — revoked {whenText(k.revokedAt)}{k.revokedReason ? ` (${k.revokedReason})` : ""}
+                {replaced
+                  ? `— ${statusText(k)}`
+                  : `— revoked ${whenText(k.revokedAt)}${k.revokedReason ? ` (${k.revokedReason})` : ""}`}
                 <label className="mt-1 flex items-center gap-1 text-xs text-rce-muted">
-                  <input type="checkbox" checked={k.writesEnabled} disabled title={WRITES_REVOKED_REASON} aria-label={`Allow writes for ${k.name}`} />
-                  Allow writes — {WRITES_REVOKED_REASON}
+                  <input type="checkbox" checked={k.writesEnabled} disabled title={writesReason} aria-label={`Allow writes for ${k.name}`} />
+                  Allow writes — {writesReason}
                 </label>
                 <label className="mt-1 flex items-center gap-1 text-xs text-rce-muted">
-                  <input type="checkbox" checked={k.teamPostsPublish} disabled title={PUBLISH_REVOKED_REASON} aria-label={`Team posts publish immediately for ${k.name}`} />
-                  Team posts publish immediately — {PUBLISH_REVOKED_REASON}
+                  <input type="checkbox" checked={k.teamPostsPublish} disabled title={publishReason} aria-label={`Team posts publish immediately for ${k.name}`} />
+                  Team posts publish immediately — {publishReason}
                 </label>
                 <button
                   className="btn btn-secondary mt-1 px-3 text-xs" style={{ minHeight: 32 }} type="button" disabled={locked} title={controlTitle(lockReason)}
@@ -653,7 +679,8 @@ export function AgentKeysSection() {
                 </button>
                 {activityFor === k.id && !locked && <KeyActivity keyId={k.id} keyName={k.name} onClose={() => setActivityFor(null)} />}
               </li>
-            ))}
+              );
+            })}
           </ul>
         </details>
       )}
@@ -661,6 +688,6 @@ export function AgentKeysSection() {
       {shown && (
         <SecretDialog title={shown.title} name={shown.name} secret={shown.secret} onClose={() => setShown(null)} />
       )}
-    </section>
+    </CollapsibleCard>
   );
 }

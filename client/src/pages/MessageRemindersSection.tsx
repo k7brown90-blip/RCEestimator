@@ -3,19 +3,21 @@
  * the approvers get ONE reminder after 15 minutes and then at most one an hour, Monday to Friday, inside the
  * hours set here (America/Chicago). A decided draft is never reminded about.
  *
- * Click path from the Dashboard: left nav "Settings" -> scroll to "Message reminders", under "Agent
- * webhooks" (two clicks). The reminder is a notification on the person's device: "Messages" -> "Turn on
+ * Click path from the Dashboard: left nav "Settings" -> click the "Message reminders" row to open it (the cards
+ * start folded). Two clicks. The reminder is a notification on the person's device: "Messages" -> "Turn on
  * notifications on this device" turns that on (the card says so).
  *
  *   * Only the hours are set here. Mon-Fri is fixed text, not a field (it is Kyle's reminder rule only: customer
  *     texts go out all seven days since 2026-11-22), so there is no control that could silently do nothing.
  *   * "Save hours" keeps the two times; "Use 8:00 AM - 8:00 PM" puts the default back. Both are the exit.
- *   * Kyle only. The AI admin and every other login see the card with the boxes GREYED and the reason printed.
+ *   * Kyle only. The AI admin and every other login see the card with the boxes GREYED and the reason printed once, on the
+ *     card's row (never repeated in the body: Kyle, 2026-11-26, "Yes, one line each").
  *     State lives in the one owner-settings route (PUT /owner-settings/hubNotify).
  */
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { CollapsibleCard } from "../components/CollapsibleCard";
 import { useIsKyle, useSession, useSessionFailed } from "../lib/session";
 
 export const REMINDERS_LOCK_REASON = "Only Kyle's PIN sign-in can change these.";
@@ -74,17 +76,19 @@ export function MessageRemindersSection() {
     }
   }
 
-  return (
-    <section className="card mt-5 p-6" aria-label="Message reminders">
-      <h2 className="text-lg font-semibold">Message reminders</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        {REMINDERS_TEXT} {clockLabel(known ? data.value.start : start)} – {clockLabel(known ? data.value.end : end)}.
-      </p>
-      <p className="mt-1 text-xs text-rce-muted">{REMINDERS_DEVICE_NOTE}</p>
+  const hours = `${clockLabel(known ? data.value.start : start)} – ${clockLabel(known ? data.value.end : end)}`;
 
-      {!allowed && (
-        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="reminders-locked">{REMINDERS_LOCK_REASON}</p>
-      )}
+  return (
+    <CollapsibleCard
+      id="settings-message-reminders"
+      title="Message reminders"
+      aria-label="Message reminders"
+      subtitle={`${REMINDERS_TEXT} ${hours}.`}
+      summary={unknownReason ?? `${hours}, Mon–Fri`}
+    >
+      <p className="text-xs text-rce-muted">{REMINDERS_DEVICE_NOTE}</p>
+
+      {/* A login that cannot change these sees the reason ONCE, on the card's own row (the summary above); the boxes below are greyed with it as their tooltip. */}
       {notice && <p className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900">{notice}</p>}
       {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
 
@@ -120,8 +124,9 @@ export function MessageRemindersSection() {
           Use 8:00 AM – 8:00 PM
         </button>
       </div>
-      {unknownReason && <p className="mt-2 text-xs text-rce-muted">{unknownReason}</p>}
+      {/* The lock reason is printed once, on the card's row; here only the loading / could-not-load states. */}
+      {allowed && unknownReason && <p className="mt-2 text-xs text-rce-muted">{unknownReason}</p>}
       {orderBlock && !unknownReason && <p className="mt-2 text-xs text-red-700">{orderBlock}</p>}
-    </section>
+    </CollapsibleCard>
   );
 }

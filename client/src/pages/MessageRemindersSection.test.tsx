@@ -3,14 +3,17 @@
  * hours" and "Use 8:00 AM – 8:00 PM". Mon-Fri is fixed text, not a field. GREYED with the reason for anyone who
  * is not Kyle - never hidden.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { MessageRemindersSection, REMINDERS_LOCK_REASON, clockLabel } from "./MessageRemindersSection";
 import { api } from "../lib/api";
 import { AI_ADMIN_SESSION, OWNER_NO_GRANT, PIN_SESSION } from "../test/sessions";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-message-reminders"));
 
 const value = (start = "08:00", end = "20:00") => ({ key: "hubNotify" as const, value: { start, end } });
 
@@ -62,7 +65,9 @@ describe("Message reminders", () => {
     vi.spyOn(api, "session").mockResolvedValue(session);
     const read = vi.spyOn(api, "hubNotify").mockResolvedValue(value());
     renderWithProviders(<MessageRemindersSection />);
-    expect(await screen.findByTestId("reminders-locked")).toHaveTextContent(REMINDERS_LOCK_REASON);
+    // Kyle, 2026-11-26 ("Yes, one line each"): the reason is printed ONCE, on the card's row; the old amber note in the body repeated it.
+    expect(await screen.findAllByText(REMINDERS_LOCK_REASON)).toHaveLength(1);
+    expect(screen.queryByTestId("reminders-locked")).toBeNull();
     expect(screen.getByLabelText("From")).toBeDisabled();
     expect(screen.getByLabelText("To")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Save hours" })).toBeDisabled();

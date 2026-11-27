@@ -8,9 +8,10 @@
  * attempt history on "Show attempts"; every control greyed with the reason for a session without
  * bot_keys and for the AI admin; and that the screen never asks for or prints an address or secret.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { AgentEventsSection, NO_SECRET_BANNER, NO_URL_BANNER } from "./AgentEventsSection";
 import { api } from "../lib/api";
 import type { HubEventView } from "../lib/types";
@@ -20,6 +21,8 @@ import { CRM_POWERS } from "../../../shared/crmPowers";
 import { HUB_EVENT_TYPES, RESEND_DELIVERED_REASON, TEST_RESEND_REASON } from "../../../shared/hub/events";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-agent-events"));
 
 const ev = (over: Partial<HubEventView> = {}): HubEventView => ({
   id: "e1", type: "estimate.signed", createdAt: "2026-11-21T15:02:00-06:00", summary: "Estimate 2026-1042 rev 2 signed, $4,250",

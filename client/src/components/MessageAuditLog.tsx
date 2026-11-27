@@ -21,7 +21,11 @@ import type { AuditEntryView } from "../../../shared/hub/views";
 
 export const AUDIT_LOCK_REASON = "Only Kyle can read the message audit log.";
 
-export function MessageAuditLog({ threadId }: { threadId?: string }) {
+/**
+ * `firstRows` shows only that many rows at first (Settings: 20); "Show older" then reveals the rest of the rows already loaded and only
+ * after that asks the server for more. Without it (the Thread drawer) every loaded row shows, exactly as before.
+ */
+export function MessageAuditLog({ threadId, firstRows }: { threadId?: string; firstRows?: number }) {
   const drawers = useDrawerParams();
   const session = useSession();
   const failed = useSessionFailed();
@@ -35,6 +39,7 @@ export function MessageAuditLog({ threadId }: { threadId?: string }) {
   const [olderMore, setOlderMore] = useState<boolean | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [olderError, setOlderError] = useState<string | null>(null);
+  const [visible, setVisible] = useState<number>(firstRows ?? Number.POSITIVE_INFINITY);
 
   const filter = { threadId, actor: actor || undefined, action: show === "send_blocked" ? "send_blocked" : undefined };
   const { data, isLoading, error } = useQuery({
@@ -44,11 +49,15 @@ export function MessageAuditLog({ threadId }: { threadId?: string }) {
     retry: false,
   });
 
-  const entries = [...(data?.entries ?? []), ...older];
+  const loaded = [...(data?.entries ?? []), ...older];
+  const entries = loaded.slice(0, visible);
+  const hiddenLoaded = loaded.length - entries.length;
   const more = olderMore ?? data?.more ?? false;
-  const reset = () => { setOlder([]); setOlderMore(null); setOlderError(null); };
+  const reset = () => { setOlder([]); setOlderMore(null); setOlderError(null); setVisible(firstRows ?? Number.POSITIVE_INFINITY); };
 
   async function loadOlder() {
+    // First the rows already loaded but not shown; only when all of them are on screen, the next page from the server.
+    if (hiddenLoaded > 0) { setVisible(Number.POSITIVE_INFINITY); return; }
     const last = entries[entries.length - 1];
     if (!last) return;
     setLoadingOlder(true);
@@ -108,7 +117,7 @@ export function MessageAuditLog({ threadId }: { threadId?: string }) {
         )}
       </ul>
       {olderError && <p className="text-xs text-red-600">{olderError}</p>}
-      {more && (
+      {(hiddenLoaded > 0 || more) && (
         <button type="button" className="btn btn-secondary text-xs" onClick={() => void loadOlder()} disabled={loadingOlder}>
           {loadingOlder ? "Loading…" : "Show older"}
         </button>

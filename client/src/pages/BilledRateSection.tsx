@@ -17,6 +17,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { PowerLockNote } from "../components/PowerLockNote";
+import { CollapsibleCard } from "../components/CollapsibleCard";
+import { UnsavedNote } from "../components/UnsavedNote";
 import { useCan } from "../lib/session";
 import type { BilledRateApplied, BilledRatePreview, BilledRateTierChange } from "../lib/api";
 
@@ -48,6 +50,8 @@ export function BilledRateSection() {
   const [error, setError] = useState<string | null>(null);
 
   const currentRate = current?.rate ?? null;
+  // A rate typed and not applied: the folded row says so, and the card opens by itself.
+  const unsaved = text.trim() !== "";
   const problem = rateProblem(text);
   const typed = problem ? null : Number(text);
   const sameAsCurrent = typed !== null && currentRate !== null && Math.abs(typed - currentRate) < 1e-9;
@@ -93,13 +97,16 @@ export function BilledRateSection() {
   };
 
   return (
-    <section className="card mt-5 p-6" data-testid="billed-rate-card">
-      <h2 className="text-lg font-semibold">Billed labor rate</h2>
-      <p className="mt-1 text-sm text-rce-muted">
-        The hourly rate every labor price in the price book is built from (price = hours × rate + material). Applying a new rate
-        re-prices the price book and the estimates still being built. Estimates already sent or signed keep the prices they were sent at.
-      </p>
-
+    <CollapsibleCard
+      id="settings-billed-rate"
+      title="Billed labor rate"
+      data-testid="billed-rate-card"
+      attention={unsaved}
+      // price = hours × rate + material. Applying a new rate re-prices the price book and the estimates still being built;
+      // sent or signed estimates keep the prices they were sent at.
+      subtitle="The hourly rate every labor price in the price book is built from; applying a new rate re-prices the price book, never an estimate already sent or signed."
+      summary={<>{`${isLoading ? "loading…" : currentRate === null ? "Rate not set" : `${dollars(currentRate)} / hr`}${!canPrice && priceReason ? ` — ${priceReason}` : ""}`}<UnsavedNote show={unsaved} /></>}
+    >
       <PowerLockNote power="price_book_edit" className="mt-3" />
 
       <div className="mt-4">
@@ -236,6 +243,6 @@ export function BilledRateSection() {
           )}
         </div>
       )}
-    </section>
+    </CollapsibleCard>
   );
 }

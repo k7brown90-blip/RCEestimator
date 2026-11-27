@@ -6,9 +6,10 @@
  * power is greyed WITH the reason (never hidden). The price book list and the item drawer carry Cost, Cost + tax and Sell.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
+import { openCards } from "../test/openCard";
 import { PurchasingSection } from "./SettingsPage";
 import { PriceBookCatalogPage } from "./PriceBookCatalogPage";
 import { api } from "../lib/api";
@@ -17,6 +18,8 @@ import { CRM_POWERS } from "../../../shared/crmPowers";
 import { OWNER_NO_GRANT, PIN_SESSION } from "../test/sessions";
 
 afterEach(() => vi.restoreAllMocks());
+// The card starts folded (Kyle, 2026-11-26); these tests are about what is inside it, so open it the way a returning user left it.
+beforeEach(() => openCards("settings-purchasing"));
 
 const repriced: TaxRepriceOutcome = {
   status: "repriced", previousRate: 0.0975, newRate: 0.11, itemsRepriced: 412, assembliesRepriced: 9, editsWritten: 1900,
@@ -37,9 +40,11 @@ async function mountPurchasing(session = PIN_SESSION) {
 describe("Settings -> Purchasing: saving the sales tax rate reprices the book and says what it did", () => {
   it("names the effect on the card, in Kyle's words", async () => {
     await mountPurchasing();
-    expect(await screen.findByText(/Tax in sell, all items/)).toBeInTheDocument();
-    expect(screen.getByText(/re-prices the whole price book right now/)).toBeInTheDocument();
-    expect(screen.getByText(/left alone and listed below/)).toBeInTheDocument();
+    // Kyle, 2026-11-26 ("Yes, one line each"): the card says it in ONE plain sentence and no longer quotes the dated rulings on screen
+    // ("Tax in sell, all items", "apply TN tax rate" stay in the code comments and the rules file).
+    expect(await screen.findByText(/sales tax rate that is built into every sell price; saving a different rate re-prices the price book right away/)).toBeInTheDocument();
+    expect(screen.queryByText(/Tax in sell, all items/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/apply TN tax rate/)).not.toBeInTheDocument();
   });
 
   it("sends the fraction and then reports items repriced, hand-priced items left alone, and which", async () => {
