@@ -12,9 +12,10 @@
  * its reason in the panel.
  *
  * ── WHAT THIS DRAWER DOES NOT DO, ON PURPOSE (drawers plan, trap 6) ─────────────────────────
- * No Issue and no Revise. Issuing a draft that already has a live estimate silently becomes a
- * REVISION — same number, revision +1 — and the customer's existing link stops working (app.ts,
- * /issued-estimates/:id/revise). Those belong in the builder, with its confirms and its paper
+ * No Issue and no Revise. Issuing a draft that already has a live estimate saves onto it: once
+ * the customer has been sent it or has opened it that is a REVISION — same number, revision +1 —
+ * and their existing link stops working (app.ts, /issued-estimates/:id/revise; before that it is
+ * updated where it is, 2026-11-27). Those belong in the builder, with its confirms and its paper
  * trail, so Edit LINKS OUT to it and nothing here can issue.
  *
  * CHANGE ORDER IS NOW HERE (2026-09-29), and the rule above is why it may be: raising one

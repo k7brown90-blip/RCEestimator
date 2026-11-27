@@ -1790,6 +1790,9 @@ healthRecordTechRouter.post("/visits/:visitId/change-order", asyncHandler(async 
  * revises the live estimate rather than minting a second number, and a SIGNED
  * or LOST live estimate is refused with the same reason the office sees. This
  * route used to carry its own copy of that decision; it must not grow one back.
+ * (2026-11-27: while nobody outside the office has seen the live estimate the
+ * same function updates it in place - `estimateId` and `customerUrl` come back
+ * unchanged. The quote payload's lifecycle.savesInPlace says which, beforehand.)
  */
 healthRecordTechRouter.post("/quotes/:draftId/issue", asyncHandler(async (req: TechRequest, res) => {
   const draft = await quoteDraftForTech(readParam(req, "draftId"), req.technician!.id);

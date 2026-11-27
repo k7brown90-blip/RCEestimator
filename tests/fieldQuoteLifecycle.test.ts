@@ -218,7 +218,10 @@ describe("PUT /health-record/quotes/:draftId/details — the CRM's setDraftDetai
     expect((await draftRow(d.id)).jobDescription).toBeNull();
   });
 
-  it("a renamed draft reaches the customer on 'Save changes to the estimate': the revision carries the DRAFT's title, same number", async () => {
+  // Changed deliberately (Kyle, 2026-11-26 / 27, plan 2026-11-27-one-estimate-one-link): this pinned
+  // "revision 2" for a save of an estimate that had never been sent. Such a save now updates the
+  // estimate in place; the revision half of the test runs after the estimate is sent.
+  it("a renamed draft reaches the customer on 'Save changes to the estimate': the estimate carries the DRAFT's title, same number - in place while unsent, as a revision once sent", async () => {
     const visitId = await newVisit("details-revise");
     const d = await draftWithLine(visitId, "details-revise");
     const first = await issueFromField(d.id);
@@ -226,17 +229,25 @@ describe("PUT /health-record/quotes/:draftId/details — the CRM's setDraftDetai
     expect(crm.status).toBe(200);
     // The edit reopened the unsigned draft; the field's Issue is now "Save changes to the estimate".
     expect((await getDraftLifecycle(prisma, d.id)).hasUnsavedChanges).toBe(true);
+    const before = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: first.estimateId } });
     const second = await issueFromField(d.id);
     expect(second.number).toBe(first.number);
+    // Nobody has been sent it: the SAME estimate, the SAME link, the new title and scope.
+    expect(second.estimateId).toBe(first.estimateId);
+    expect(second.customerUrl).toBe(first.customerUrl);
     const rev = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: second.estimateId } });
-    expect(rev.revision).toBe(2);
+    expect(rev.revision).toBe(1);
+    expect(rev.token).toBe(before.token);
     expect(rev.title).toBe("Title edited after issue");
     expect(rev.scopeText).toBe("New scope.");
-    // Same via the office's own Revise button.
+    // Same via the office's own Revise button - and once it has been SENT, that save is a revision.
+    await prisma.issuedEstimate.update({ where: { id: second.estimateId }, data: { sentAt: new Date(), sentBy: "human:test", sentTo: "sent-to@example.com", status: "sent" } });
     await request(app).put(`/price-book/drafts/${d.id}/details`).send({ title: "Edited again" });
     const revised = await request(app).post(`/issued-estimates/${second.estimateId}/revise`).send({});
     expect(revised.status, JSON.stringify(revised.body)).toBe(201);
-    expect((await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: revised.body.estimateId } })).title).toBe("Edited again");
+    expect(revised.body.replacedInPlace).toBeUndefined();
+    expect(revised.body.estimateId).not.toBe(second.estimateId);
+    expect(await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: revised.body.estimateId } })).toMatchObject({ title: "Edited again", revision: 2 });
   });
 
   it("a title handed to the CRM issue route is written onto the draft first — the draft stays the record", async () => {
@@ -390,9 +401,10 @@ describe("POST /health-record/visits/:visitId/quote — workingDraftForVisit", (
     const row = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: issued.estimateId } });
     expect(q.lifecycle).toEqual({
       status: "finalized",
+      // savesInPlace (2026-11-27, one estimate, one link): issued and not sent, so a save updates it where it is.
       // issuedAt / validDays / figuresKey (Phase 7 unit U7): the validity window the phone judges by
       // its own clock, and the server-made fingerprint of the frozen figures it echoes on a signature.
-      issued: { estimateId: issued.estimateId, number: issued.number, revision: 1, status: "draft", signedAt: null, issuedAt: row.createdAt.toISOString(), validDays: row.validDays, figuresKey: expect.stringMatching(/^[0-9a-f]{64}$/), archived: false, customerUrl: estimateLink(row.token) },
+      issued: { estimateId: issued.estimateId, number: issued.number, revision: 1, status: "draft", signedAt: null, issuedAt: row.createdAt.toISOString(), validDays: row.validDays, figuresKey: expect.stringMatching(/^[0-9a-f]{64}$/), archived: false, savesInPlace: true, customerUrl: estimateLink(row.token) },
       hasUnsavedChanges: false,
       reviseReason: null,
       deleteReason: expect.stringContaining(issued.number),
@@ -412,12 +424,15 @@ describe("POST /health-record/visits/:visitId/quote — workingDraftForVisit", (
     draftIds.push(draftId);
     await auth(request(app).post(`/health-record/quotes/${draftId}/lines`)).send({ itemId: ITEM, quantity: 1 });
     const first = await issueFromField(draftId);
+    // The customer has been emailed it (Kyle, 2026-11-26: an estimate nobody outside the office has
+    // seen is updated in place instead - tests/oneEstimateOneLink.test.ts). From here Issue revises.
+    await prisma.issuedEstimate.update({ where: { id: first.estimateId }, data: { sentAt: new Date(), sentBy: "human:test", sentTo: "sent-to@example.com", status: "sent" } });
 
     const resumed = await openVisitQuote(visitId);
     const add = await auth(request(app).post(`/health-record/quotes/${resumed.draftId}/lines`)).send({ itemId: ITEM, quantity: 3 });
     expect(add.status, JSON.stringify(add.body)).toBe(201);
     const q = await quotePayload(draftId);
-    expect(q.lifecycle).toMatchObject({ status: "draft", hasUnsavedChanges: true, issued: { number: first.number, revision: 1 } });
+    expect(q.lifecycle).toMatchObject({ status: "draft", hasUnsavedChanges: true, issued: { number: first.number, revision: 1, savesInPlace: false } });
 
     const second = await issueFromField(draftId);
     expect(second.number).toBe(first.number);

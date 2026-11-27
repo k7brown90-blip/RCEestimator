@@ -24,10 +24,17 @@
  * so both buttons are greyed WITH those words before the press (2026-10-08 review).
  */
 
-import type { DraftLifecycle } from "./draftLifecycle";
+import { saveOutcome, type DraftLifecycle } from "./draftLifecycle";
 
 export type PresentDecision =
-  | { kind: "issue"; revises: { number: string; revision: number } | null }
+  | {
+      kind: "issue";
+      /**
+       * The live estimate the press will save onto, or null for a first estimate. `savesInPlace`
+       * (2026-11-27) is the server's answer to "replace it where it is, or make a revision?".
+       */
+      revises: { number: string; revision: number; savesInPlace?: boolean } | null;
+    }
   | {
       kind: "reuse";
       estimateId: string;
@@ -47,7 +54,7 @@ export function presentDecision(lifecycle: DraftLifecycle | null | undefined): P
     return { kind: "blocked", reason: lifecycle?.reviseReason ?? `Estimate ${issued.number} is marked lost — reopen it before changing or issuing it again.` };
   }
   if (lifecycle?.hasUnsavedChanges && !issued.signedAt) {
-    return { kind: "issue", revises: { number: issued.number, revision: issued.revision } };
+    return { kind: "issue", revises: { number: issued.number, revision: issued.revision, savesInPlace: issued.savesInPlace } };
   }
   // Unchanged — or signed: a signed estimate is never re-issued from here (the server refuses;
   // the office's own Revise button is the deliberate path), so it is used as it stands.
@@ -82,7 +89,7 @@ export function presentFooter(d: PresentDecision): string {
   switch (d.kind) {
     case "issue":
       return d.revises
-        ? `Either action saves your changes to estimate ${d.revises.number} as revision ${d.revises.revision + 1} (same number) and replaces the customer's link.`
+        ? `Either action ${saveOutcome(d.revises)}.`
         : "Either action records the estimate and freezes its prices. Nothing is frozen before then.";
     case "reuse":
       if (d.changedSince) {

@@ -65,6 +65,7 @@ import type { QuoteState } from '../../lib/crmSync'
 import type { EstimateOptionLetter } from '../../../../shared/estimateOptions'
 import { defaultSelection, picksOne, selectionPrice, toggleSelection } from '../../../../shared/quoteMoney'
 import { presentDecision, signNowReason, type PresentDecision } from '../../../../shared/presentIssue'
+import { saveOutcome } from '../../../../shared/draftLifecycle'
 import { PRICED_WHEN_SIGNAL_RETURNS, type PreviewOption } from '../../../../shared/quotePreview'
 import { FinancingLine } from '../components/FinancingSheet'
 import { PREVIEW_SIGN_REASON, PREVIEW_WATERMARK, previewNothingToShowReason, savedAtWords } from './QuoteOffline'
@@ -184,7 +185,7 @@ export function signFooter(decision: PresentDecision): string {
   switch (decision.kind) {
     case 'issue':
       return decision.revises
-        ? `Sign now saves your changes to estimate ${decision.revises.number} as revision ${decision.revises.revision + 1} (same number) and replaces the customer's link, then opens signing.`
+        ? `Sign now ${saveOutcome(decision.revises)}, then opens signing.`
         : 'Sign now records the estimate and freezes its prices, then opens signing. Nothing is frozen before then.'
     case 'reuse':
       return decision.changedSince

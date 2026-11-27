@@ -132,6 +132,14 @@ export type GraduateResult =
        * travels back with the success rather than being buried in a log.
        */
       unpriced?: string[];
+      /**
+       * True ONLY when a save REPLACED the live estimate in place (Kyle, 2026-11-27, "one estimate,
+       * one link"): `estimateId`, `number` and `revision` are then the estimate that was already
+       * there — same row, same customer link — carrying the draft's lines and prices as they are
+       * now. Absent on a first issue and on a real revision. Every screen that reports a save reads
+       * this before it says "revision N".
+       */
+      replacedInPlace?: boolean;
     }
   | { ok: false; reasons: string[] };
 
@@ -792,18 +800,50 @@ export type SignResult =
  * frozen `money.selections` table (every ticked combination's finished dollars) and the revision.
  * Made on the SERVER only and carried on the quote payload's lifecycle; the phone echoes it back
  * with a signature it captured, and computes nothing. Null when the estimate is gone.
+ *
+ * AND WHICH IN-PLACE SAVE IT IS (one estimate, one link, 2026-11-27). A save of an unseen estimate
+ * replaces its document under the SAME revision, and may change only words (the scope, the title,
+ * a line's name) while every dollar stays put. Revision and dollars alone would then give the same
+ * key for two different documents. So the key also carries `inPlaceStampOf` - the id of the row's
+ * newest "updated" event - and EVERY in-place save changes it: a signature taken on a screen that
+ * was loaded before the save is refused at the write, whichever device it was taken on. The stamp
+ * is left out of the hash when there has never been an in-place save, so the key of every estimate
+ * issued before this (and any signature a phone was already holding for one) is unchanged.
+ *
+ * The stamp is read BEFORE the figures: a save landing between the two reads then yields a key
+ * that matches no document (a refusal, the safe side), never the old stamp with the new figures.
  */
 export async function issuedFiguresKey(prisma: PrismaClient, estimateId: string): Promise<string | null> {
   const row = await prisma.issuedEstimate.findUnique({ where: { id: estimateId }, select: { revision: true } });
   if (!row) return null;
+  const stamp = await inPlaceStampOf(prisma, estimateId);
   const money = await getIssuedQuoteMoney(prisma, estimateId);
   if (!money) return null;
-  return figuresKeyOf(money.selections, row.revision);
+  return figuresKeyOf(money.selections, row.revision, stamp);
 }
 
-/** Pure: the key for one selections table and one revision. Keys are sorted so object order cannot move the hash. */
-export function figuresKeyOf(selections: Record<string, unknown>, revision: number): string {
-  return createHash("sha256").update(stableJson({ revision, selections })).digest("hex");
+/**
+ * Which in-place save this estimate's document is: the id of its newest "updated" event, null when
+ * it has never been saved in place. Only `replaceInPlace` writes that event, in the same
+ * transaction as the document it replaces.
+ */
+export async function inPlaceStampOf(db: PrismaClient | Prisma.TransactionClient, estimateId: string): Promise<string | null> {
+  const last = await db.issuedEstimateEvent.findFirst({
+    where: { estimateId, type: "updated" },
+    orderBy: [{ at: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  return last?.id ?? null;
+}
+
+/**
+ * Pure: the key for one selections table, one revision and (when there has been one) one in-place
+ * save. Keys are sorted so object order cannot move the hash.
+ */
+export function figuresKeyOf(selections: Record<string, unknown>, revision: number, inPlaceStamp: string | null = null): string {
+  return createHash("sha256")
+    .update(stableJson(inPlaceStamp ? { revision, selections, inPlace: inPlaceStamp } : { revision, selections }))
+    .digest("hex");
 }
 
 function stableJson(value: unknown): string {
@@ -877,6 +917,16 @@ export async function signEstimateInPerson(
   return applySignature(prisma, est.id, est.number, est.revision, name, input, "in_person");
 }
 
+/** Refusal: an in-place save landed between reading the estimate for this signature and writing it. */
+export function changedWhileSigningReason(number: string): string {
+  return `Estimate ${number} was changed while the customer was signing it. Open the current estimate and have the customer read it and sign again.`;
+}
+
+/** Refusal: the device did not say which version it showed, and the estimate has been saved in place since it was issued. */
+export function unknownVersionReason(number: string): string {
+  return `Estimate ${number} was changed after it was issued, and this screen did not say which version the customer read. Reload the page, then have the customer read the estimate shown and sign again.`;
+}
+
 /**
  * The one place a signature is written, for both channels.
  *
@@ -902,6 +952,27 @@ async function applySignature(
   */
   const drawn = checkSignatureImage(input.signatureImage);
   if (!drawn.ok) return { ok: false, reason: drawn.reason };
+
+  /*
+    ── THE DOCUMENT MUST NOT CHANGE UNDER THE PEN (one estimate, one link, 2026-11-27) ───────────
+    An estimate nobody outside the office has seen is now saved IN PLACE: same row, same revision.
+    Before that, every save was a new revision, and a signature on the old one was refused as
+    "replaced by a newer revision". The customer reading the estimate on the office's or the
+    technician's own screen leaves no record a save could see, so the guard is here, at the write:
+
+      1. which in-place save the document is (`inPlaceStampOf`) is read NOW, before anything below
+         reads the lines or the options, and read AGAIN under the row lock in the signing
+         transaction. If a save landed in between, the signature is refused;
+      2. the figures key (below) carries the same stamp, so a screen loaded before a save is refused
+         even when the save changed only words;
+      3. a signature taken on a device (the office's or a phone) that does not say which document
+         it showed is refused once the estimate has been saved in place at all. Both apps send the
+         key; only a page loaded before this build does not.
+  */
+  const stampAtStart = await inPlaceStampOf(prisma, estimateId);
+  if (channel === "in_person" && stampAtStart && input.figuresKey == null) {
+    return { ok: false, reason: unknownVersionReason(number) };
+  }
 
   /*
     ── CAPTURED ON THE PHONE, JUDGED AT THE WRITE (Phase 7 unit U7, 2026-10-10) ─────────────────
@@ -1148,6 +1219,10 @@ async function applySignature(
     the defect this exists to remove.
   */
   const signed = await prisma.$transaction(async (tx) => {
+    // The same row lock reviseEstimate takes for an in-place save: either that save has committed
+    // (and the stamp below shows it) or it waits until this signature has.
+    await tx.$queryRaw`SELECT "id" FROM "IssuedEstimate" WHERE "id" = ${estimateId} FOR UPDATE`;
+    if ((await inPlaceStampOf(tx, estimateId)) !== stampAtStart) return { signed: false as const, adopted: null, changed: true as const };
     const result = await tx.issuedEstimate.updateMany({
       /*
         Every refusal that guards the WRITE lives in this one WHERE (review finding, 2026-10-08):
@@ -1198,6 +1273,7 @@ async function applySignature(
     if ("idTaken" in signed && signed.idTaken) {
       return { ok: false, reason: "This signature was already recorded on a different estimate. Open the estimate with signal and sign it again." };
     }
+    if ("changed" in signed && signed.changed) return { ok: false, reason: changedWhileSigningReason(number) };
     // Which guard stopped the write? Say that, not a blanket "already signed".
     const now = await prisma.issuedEstimate.findUnique({
       where: { id: estimateId },
@@ -1454,12 +1530,21 @@ export async function adoptSupersededInvoice(
 }
 
 /**
- * Supersede an issued estimate with a new revision built from the draft as it stands now.
+ * Save the draft, as it stands now, onto the estimate it was issued as.
  *
- * The old row is NEVER edited beyond being linked: its lines, its prices and — if it was signed —
- * its signature stay exactly as they were. That is the whole point. What changes is that its
- * token stops resolving, so a customer cannot sign, or re-sign, a version that has been replaced.
- * Sending the new revision is a separate, explicit operator action.
+ * TWO OUTCOMES, chosen under the row lock by `estimateIsUnseen` (Kyle, 2026-11-27, "It should
+ * replace what was edited not create more drafts that have to be deleted"):
+ *
+ *   NOBODY OUTSIDE THE OFFICE HAS SEEN IT - the estimate is UPDATED IN PLACE (`replaceInPlace`):
+ *   same row, number, revision and customer link, the draft's lines and prices as they are now.
+ *   The result says `replacedInPlace: true`.
+ *
+ *   ANYBODY HAS, OR MAY HAVE (sent, opened, signed, accepted, paid on ...) - a new REVISION
+ *   supersedes it, exactly as every save did before. The old row is NEVER edited beyond being
+ *   linked: its lines, its prices and — if it was signed — its signature stay exactly as they were.
+ *   That is the whole point. What changes is that its token stops resolving, so a customer cannot
+ *   sign, or re-sign, a version that has been replaced. Sending the new revision is a separate,
+ *   explicit operator action.
  */
 export async function reviseEstimate(
   prisma: PrismaClient,
@@ -1540,7 +1625,7 @@ export async function reviseEstimate(
   class SupersedeRefused extends Error {
     constructor(public readonly reason: string) { super(reason); }
   }
-  let next: { id: string; number: string; revision: number };
+  let next: { id: string; number: string; revision: number; replacedInPlace?: boolean };
   try {
     next = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "IssuedEstimate" WHERE "id" = ${prev.id} FOR UPDATE`;
@@ -1550,6 +1635,11 @@ export async function reviseEstimate(
       });
       if (locked.supersededBy) throw new SupersedeRefused("That estimate has already been superseded by a newer revision.");
       if (opts.refuseSignedWith && locked.signedAt) throw new SupersedeRefused(opts.refuseSignedWith);
+      // ONE ESTIMATE, ONE LINK (Kyle, 2026-11-27): an estimate nobody outside the office has seen is
+      // UPDATED IN PLACE - no new revision, no new link. Judged HERE, under the row lock and nowhere
+      // earlier: a send, a customer view or a signature that committed while the fresh row was being
+      // built is read by this check and wins, which means the save falls back to a revision.
+      if (await estimateIsUnseen(tx, prev.id)) return replaceInPlace(tx, prev, graduated.estimateId, opts.actor);
       return linkRevision(tx, prev, graduated.estimateId, opts.actor);
     });
   } catch (err) {
@@ -1561,7 +1651,167 @@ export async function reviseEstimate(
     return { ok: false, reasons: [err.reason] };
   }
 
-  return { ok: true, estimateId: next.id, number: next.number, revision: next.revision };
+  return {
+    ok: true,
+    estimateId: next.id,
+    number: next.number,
+    revision: next.revision,
+    ...(next.replacedInPlace ? { replacedInPlace: true } : {}),
+  };
+}
+
+// ─── ONE ESTIMATE, ONE LINK (Kyle, 2026-11-27) ───────────────────────────────────────────────
+//
+// "This is getting on my nerves, see how each draft creates a new document. I am tired of it. It
+//  should replace what was edited not create more drafts that have to be deleted."
+//
+// Every save of an issued estimate used to be a new revision with a new link. Five saves before
+// the first send made five documents and five links. Now a save REPLACES the live estimate while
+// nobody outside the office can have seen it, and is a revision (as before) from the moment
+// anybody could have.
+
+/** The audit events an estimate can carry and still be one nobody outside the office has seen. */
+const UNSEEN_EVENT_TYPES = ["created", "updated", "terms_changed", "warranty_set", "warranty_cleared"];
+
+/**
+ * Has NOBODY outside the office seen, been sent, or acted on this estimate?
+ *
+ * The ONE definition: `reviseEstimate` asks it under the row lock to choose between replacing in
+ * place and making a revision, and `getDraftLifecycle` asks it so each screen can say which of the
+ * two its Save button will do. Pass the transaction client to read under the caller's lock.
+ *
+ * It is an ALLOW-list on purpose. Every column and every table that points at an IssuedEstimate
+ * (prisma/schema.prisma) was read for this, and anything that records the customer, the money or
+ * the job touching the estimate makes it NOT unseen. A fact this function does not recognise
+ * (a new event type, say) also makes it not unseen: the safe answer is a revision, which is what
+ * every save did before.
+ *
+ *   on the row      status still "draft" (never sent / viewed / signed / lost / void), no send, no
+ *                   first view, no signature or office acceptance, no captured field signature, not
+ *                   void, not lost, not archived, no job, no bounce, no payment reminder, no frozen
+ *                   discount or combination cap (both are written at signing), no option chosen
+ *   EmailDelivery   none for it (an email carrying it went out, delivered or not)
+ *   EmailBounce     none
+ *   HubMessage      none to or from the customer about it (internal crew/agent notes do not count)
+ *   Payment         none (plain column `estimateId`)
+ *   FinancingFee    none (plain column `estimateId`)
+ *   Commission      none (plain column `issuedEstimateId`)
+ *   Document        none filed against it (the signed agreement)
+ *   change orders   none raised under it, issued or still a draft
+ *   its lines       none closed out on a job (JobCompletionLine - the lines are replaced)
+ *   its events      only the office's own: created, updated, terms changed, warranty set / cleared
+ *
+ * "send_started" is NOT one of the office's own events: an email that is being built or is with
+ * the provider already counts as sent (sendEstimateEmail writes it under this row's lock before it
+ * reads the figures it will quote).
+ *
+ * WHAT THIS CANNOT SEE, because nothing records it:
+ *   - a link Kyle copied and texted by hand. Named in the plan ("Recorded, not in this work
+ *     order") as accepted: until the customer opens it, a save changes what the link shows.
+ *   - the customer reading the estimate on the office's or the technician's OWN screen (Sign in
+ *     person, Present, Show the customer). NOT accepted by the plan, and not left open: a save
+ *     still lands in place, but the signature is then refused at the write (applySignature - the
+ *     figures key carries the in-place stamp, and the stamp is re-read under the row lock).
+ *   - a copy printed or saved from the CRM's "Open / print the estimate" and handed over. The plan
+ *     (Part 1) has that button record nothing, so a later in-place save leaves the paper and the
+ *     link with the same number and revision and different content. OPEN - it needs Kyle's ruling
+ *     (record a print and lose in-place saves after every preview, or split preview from print).
+ */
+export async function estimateIsUnseen(
+  db: PrismaClient | Prisma.TransactionClient,
+  estimateId: string,
+): Promise<boolean> {
+  const est = await db.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: {
+      status: true, sentAt: true, sentBy: true, sentTo: true, firstViewedAt: true,
+      signedAt: true, signerName: true, signedChannel: true, acceptedVia: true,
+      clientSignatureId: true, signatureCapturedAt: true, signatureImage: true,
+      voidedAt: true, lostAt: true, archivedAt: true, jobVisitId: true,
+      lastBounceAt: true, paymentRemindersSent: true, lastPaymentReminderAt: true,
+      discountJson: true, comboCapJson: true, selectedOptions: true,
+      supersededBy: { select: { id: true } },
+    },
+  });
+  if (!est) return false;
+  if (est.status !== "draft") return false;
+  if (est.supersededBy) return false;
+  if (est.sentAt || est.sentBy || est.sentTo || est.firstViewedAt) return false;
+  if (est.signedAt || est.signerName || est.signedChannel || est.acceptedVia) return false;
+  if (est.clientSignatureId || est.signatureCapturedAt || est.signatureImage) return false;
+  if (est.voidedAt || est.lostAt || est.archivedAt || est.jobVisitId) return false;
+  if (est.lastBounceAt || est.lastPaymentReminderAt || est.paymentRemindersSent > 0) return false;
+  if (est.discountJson || est.comboCapJson || est.selectedOptions.length > 0) return false;
+
+  if (await db.emailDelivery.count({ where: { issuedEstimateId: estimateId } })) return false;
+  if (await db.emailBounce.count({ where: { issuedEstimateId: estimateId } })) return false;
+  if (await db.hubMessage.count({ where: { issuedEstimateId: estimateId, direction: { not: "internal" } } })) return false;
+  if (await db.payment.count({ where: { estimateId } })) return false;
+  if (await db.financingFee.count({ where: { estimateId } })) return false;
+  if (await db.commission.count({ where: { issuedEstimateId: estimateId } })) return false;
+  if (await db.document.count({ where: { issuedEstimateId: estimateId } })) return false;
+  if (await db.issuedEstimate.count({ where: { changeOrderForId: estimateId } })) return false;
+  if (await db.priceBookDraftEstimate.count({ where: { changeOrderForId: estimateId } })) return false;
+  if (await db.jobCompletionLine.count({ where: { line: { estimateId } } })) return false;
+  if (await db.issuedEstimateEvent.count({ where: { estimateId, type: { notIn: UNSEEN_EVENT_TYPES } } })) return false;
+  return true;
+}
+
+/**
+ * Put the freshly graduated row's document onto the estimate that is already there, and delete the
+ * fresh row. Called only under the row lock, only after `estimateIsUnseen` said yes.
+ *
+ * There is ONE snapshot builder - graduateDraft - and this reuses its output instead of being a
+ * second one: the fresh row holds exactly what a revision would have held.
+ *
+ * WHAT THE KEPT ROW KEEPS, because it is the estimate's identity and not its document: its id (so
+ * every screen and reference stays valid), its number and revision, its TOKEN (the customer's link
+ * - never a new one), its own supersedesId (the revision it replaced, if any), who created it, its
+ * event history, and its home-warranty claim (a save changes the work, not who pays - the same rule
+ * linkRevision applies).
+ *
+ * WHAT COMES FROM THE FRESH ROW: everything else graduateDraft wrote - title and scope, the frozen
+ * customer and address text, the money, the discount programme, the option mode, the material-cap
+ * working, the band schedule, the financing plans, the validity window and its start (`createdAt`:
+ * the prices were re-frozen now, and a revision has always restarted that clock), and the lines and
+ * options themselves, which are MOVED rather than copied. Taken as "the fresh row minus the identity
+ * columns" so a column added to graduateDraft later is carried without anyone remembering this
+ * function. Every lifecycle column in that remainder is null or default on BOTH rows: the fresh row
+ * is seconds old, and the kept row was just judged unseen.
+ */
+async function replaceInPlace(
+  tx: Prisma.TransactionClient,
+  prev: { id: string; number: string; revision: number; total: number },
+  freshId: string,
+  actor: string | undefined,
+): Promise<{ id: string; number: string; revision: number; replacedInPlace: true }> {
+  const fresh = await tx.issuedEstimate.findUniqueOrThrow({ where: { id: freshId } });
+  const {
+    id: _id, number: _number, revision: _revision, token: _token, status: _status,
+    supersedesId: _supersedesId, createdBy: _createdBy, warrantyJson: _warrantyJson,
+    ...document
+  } = fresh;
+  void _id; void _number; void _revision; void _token; void _status; void _supersedesId; void _createdBy; void _warrantyJson;
+
+  await tx.issuedEstimateLine.deleteMany({ where: { estimateId: prev.id } });
+  await tx.issuedEstimateOption.deleteMany({ where: { estimateId: prev.id } });
+  const moved = await tx.issuedEstimateLine.updateMany({ where: { estimateId: fresh.id }, data: { estimateId: prev.id } });
+  await tx.issuedEstimateOption.updateMany({ where: { estimateId: fresh.id }, data: { estimateId: prev.id } });
+  await tx.issuedEstimate.update({ where: { id: prev.id }, data: document });
+  // The fresh row goes, and its one "created" event with it (cascade): the kept row's history must
+  // not gain a second "created", and nothing may be left pointing at an estimate that never was.
+  await tx.issuedEstimate.delete({ where: { id: fresh.id } });
+  await tx.issuedEstimateEvent.create({
+    data: {
+      estimateId: prev.id,
+      type: "updated",
+      actor: actor ?? "human:crm-session",
+      detail:
+        `The saved edits replaced this unsent version: ${moved.count} line(s), total $${fresh.total.toFixed(2)} ` +
+        `(was $${prev.total.toFixed(2)}). Same number, same revision, same customer link.`,
+    },
+  });
+  return { id: prev.id, number: prev.number, revision: prev.revision, replacedInPlace: true };
 }
 
 /** Re-key the graduated row onto the previous one's house number, one revision up, and link the chain. */
@@ -1694,6 +1944,8 @@ export interface IssueDraftInput {
  *
  * A draft has one live estimate at a time. Re-issuing it supersedes what was there: same house
  * number, revision up, the old link dead so a customer cannot sign a version Kyle has replaced.
+ * (2026-11-27: while nobody outside the office has seen the live estimate, re-issuing UPDATES IT
+ * IN PLACE instead - same number, same revision, same link. reviseEstimate decides, for both doors.)
  *
  * The guard lives HERE and not in graduateDraft because reviseEstimate calls graduateDraft — a
  * check inside it would recurse forever.
@@ -1807,6 +2059,10 @@ export async function getDraftLifecycle(prisma: PrismaClient, draftId: string, d
         validDays: live.validDays,
         figuresKey: (await issuedFiguresKey(prisma, live.id)) ?? "",
         archived: live.archivedAt !== null,
+        // The SAME test reviseEstimate runs under its lock, so the words on the Save button and
+        // what the save does cannot disagree (a send landing in between is the one honest gap:
+        // the save then makes a revision and its answer says so).
+        savesInPlace: await estimateIsUnseen(prisma, live.id),
         customerUrl: null,
       }
     : null;

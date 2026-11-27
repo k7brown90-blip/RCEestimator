@@ -144,6 +144,16 @@ describe("item 1 — re-issue revises instead of minting a second estimate", () 
     const firstEstimateId = first.body.data.estimateId as string;
     const firstNumber = first.body.data.number as string;
 
+    // The customer has been emailed it. Changed deliberately (Kyle, 2026-11-26, "It should replace
+    // what was edited not create more drafts that have to be deleted"; plan
+    // 2026-11-27-one-estimate-one-link): a re-issue of an estimate nobody outside the office has
+    // seen now updates it in place (tests/oneEstimateOneLink.test.ts), so the revision this test
+    // pins needs the estimate to have been sent - the columns the real send stamps.
+    await prisma.issuedEstimate.update({
+      where: { id: firstEstimateId },
+      data: { sentAt: new Date(), sentBy: "human:test", sentTo: "sent-to@example.com", status: "sent" },
+    });
+
     // Editing a line reopens the (already-issued) draft — reopenForEditIfUnsigned.
     const edited = await auth(request(app).patch(`/health-record/quote-lines/${lineId}`)).send({ quantity: 2 });
     expect(edited.status).toBe(200);

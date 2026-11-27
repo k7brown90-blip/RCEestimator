@@ -3,7 +3,8 @@ import { useStickyFooterSpace } from "../lib/useStickyFooterSpace";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
-import { api } from "../lib/api";
+import { api, openProtectedPdf } from "../lib/api";
+import { saveOutcome, savedOutcome } from "../../../shared/draftLifecycle";
 import { useLead } from "../lib/recordQueries";
 import { ballparkHeaderLine } from "../../../shared/leadBallpark";
 import { AccountPhotoGallery } from "../components/PhotoGalleryPanel";
@@ -258,9 +259,19 @@ export function PriceBookIntakePage() {
     [cats]
   );
 
+  // Back to the account (Kyle, 2026-11-27: "I have no back button here to go to his account."). The
+  // account door sends `?account=`; a draft opened without it (a change order) uses its own account.
+  // No account (unattached draft, a lead's ballpark) = no button.
+  const backAccountId = accountId ?? review?.draft.customerId ?? null;
+
   return (
     <div className="space-y-4">
-      <PageHeader title="Estimate intake" subtitle="Browse, search, and confirm — the engine prices" />
+      <PageHeader
+        title="Estimate intake"
+        subtitle="Browse, search, and confirm — the engine prices"
+        backTo={backAccountId ? `/accounts/${backAccountId}` : undefined}
+        backLabel="Back to account"
+      />
 
       {arrival?.changeOrderResumed && !resumedNoteDismissed && (
         <div role="status" className="flex items-start justify-between gap-3 rounded-lg bg-rce-accentBg p-3 text-sm text-rce-accentDark">
@@ -2580,6 +2591,9 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["pb-issued", draftId] });
     void queryClient.invalidateQueries({ queryKey: ["pb-issued-detail", activeId] });
+    // The lifecycle rides the compute payload, and a send or a save changes what the next save
+    // will do (replace in place, or a revision) - so the words on the Save button are re-read too.
+    void queryClient.invalidateQueries({ queryKey: ["pb-compute", draftId] });
   };
 
   const issue = useMutation({
@@ -2648,7 +2662,9 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   const revise = useMutation({
     mutationFn: () => api.pbIssuedRevise(activeId as string),
     onSuccess: (r) => {
-      setNotice(`Changes saved to ${r.number} (revision ${r.revision}). The customer's old link no longer opens — send the new one.`);
+      // Says what the save DID (Kyle, 2026-11-27): an estimate nobody outside the office had seen
+      // is updated where it is, and this must not claim a new revision or a dead link then.
+      setNotice(savedOutcome(r));
       setSelectedId(r.estimateId);
       refresh();
     },
@@ -2659,6 +2675,16 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
   });
 
   const est = detail?.estimate;
+  // What "Save changes to the estimate" will do to THIS estimate - the server's answer, from the
+  // draft's lifecycle (shared/draftLifecycle.ts `savesInPlace`), worded once for both apps.
+  const lifecycleIssued = computeData?.lifecycle?.issued ?? null;
+  const saveWill = est
+    ? saveOutcome({
+        number: est.number,
+        revision: est.revision,
+        savesInPlace: lifecycleIssued?.estimateId === est.id ? lifecycleIssued.savesInPlace : false,
+      })
+    : "";
 
   // The terms after issue (2026-09-20) — editable from where the document is shown.
   const setTerms = useMutation({
@@ -2869,23 +2895,26 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
               </div>
             </div>
 
-            {detail?.customerLink && (
-              <>
-                <p className="mt-2 break-all text-[11px] text-rce-soft">
-                  Customer link: <a className="underline" href={detail.customerLink} target="_blank" rel="noreferrer">{detail.customerLink}</a>
-                </p>
-                {/* The fallback for when email will not go. Opens the customer's own page, which
-                    carries a Print / Save as PDF button. */}
-                <a
-                  className="btn btn-secondary mt-2 w-full"
-                  href={detail.customerLink}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open / print the estimate
-                </a>
-              </>
-            )}
+            {/*
+              AN OFFICE PREVIEW IS NEVER A CUSTOMER VIEW (Kyle, 2026-11-27: "that is supposed to
+              track the customer opening the email and its spamming the CRM and my email").
+
+              This button and the "Customer link:" line under it both used to open the customer's
+              own page. That page needs no login, so the server cannot tell the office from the
+              customer: every office preview stamped the estimate "viewed" and emailed a VIEWED
+              alert. The CRM now never opens that page. This opens the same customer document as a
+              PDF behind the session (GET /issued-estimates/:id/pdf, customer audience - what the
+              drawer's View does for the company copy), which records nothing. The link itself can
+              only be COPIED, for when it is texted by hand.
+            */}
+            <button
+              type="button"
+              className="btn btn-secondary mt-2 w-full"
+              onClick={() => void openProtectedPdf(`/issued-estimates/${est.id}/pdf`)}
+            >
+              Open / print the estimate
+            </button>
+            {detail?.customerLink && <CopyCustomerLink key={detail.customerLink} link={detail.customerLink} />}
           </div>
 
           {/* The terms (2026-09-20): the deposit override, and — on an unsigned change order —
@@ -2934,7 +2963,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                 <strong>{isOfficeAcceptance(est.signedChannel) ? "Accepted" : "Signed"} by {est.signerName}</strong> on {new Date(est.signedAt).toLocaleString()}
                 {acceptanceWording(est.signedChannel, est.acceptedVia).how ? ` — ${acceptanceWording(est.signedChannel, est.acceptedVia).verb} ${acceptanceWording(est.signedChannel, est.acceptedVia).how}` : ""}
                 {isOfficeAcceptance(est.signedChannel) ? " (no signature on file)" : ""}.
-                This estimate is locked; "Save changes to the estimate" creates a new revision and replaces the customer's link.
+                This estimate is locked; "Save changes to the estimate" {saveWill}.
               </p>
               <button
                 className="btn btn-primary w-full py-3 text-base"
@@ -3021,14 +3050,19 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
 
           {/* Kyle, 2026-08-29: "I just made an edit to the name and there is
               no way to save changes... It should overwrite the existing one."
-              This IS that save — a revision keeps the estimate number, bumps
-              the revision, and replaces the customer's copy. The old label
-              ("New revision from this draft") never read as saving. */}
+              This IS that save. The old label ("New revision from this draft")
+              never read as saving.
+              2026-11-27 ("It should replace what was edited not create more
+              drafts"): while nobody outside the office has seen the estimate
+              the save updates it where it is - same number, same link. Once it
+              has been sent, opened, signed or paid on, it is a revision as
+              before. The confirm and the line under the button say which,
+              from the server's own answer. */}
           <button
             className="btn btn-primary w-full"
             disabled={revise.isPending || est.status === "lost"}
             onClick={() => {
-              if (window.confirm(`Save your draft changes to estimate ${est.number}? The customer's copy is replaced (same estimate number, new revision); their old link stops working.`)) {
+              if (window.confirm(`Save your draft changes to estimate ${est.number}? This ${saveWill}.`)) {
                 revise.mutate();
               }
             }}
@@ -3036,7 +3070,7 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
             {revise.isPending ? "Saving…" : "Save changes to the estimate"}
           </button>
           <p className="text-xs text-rce-muted">
-            Edits made in this builder don't reach the issued estimate until saved to it.
+            Edits made in this builder don't reach the issued estimate until saved to it. Pressing it {saveWill}.
           </p>
           {/* 2026-10-08: the server refuses to revise a lost estimate (Reopen is the way back), so
               the button says why it is greyed instead of failing after the click. */}
@@ -3059,6 +3093,52 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The customer's link, to COPY - never to open (Kyle, 2026-11-27, plan one-estimate-one-link).
+ *
+ * The link is still needed: Kyle texts it by hand when an email will not go. But pressing it here
+ * opened the customer's page from the office, which the server counts as the customer's first view.
+ * So it is shown as text in a read-only box and copied with one button. When the browser will not
+ * give the clipboard (an http page, a denied permission), the box is selected instead and the line
+ * under the button says to press Ctrl+C - the button never silently does nothing.
+ */
+function CopyCustomerLink({ link }: { link: string }) {
+  const box = useRef<HTMLInputElement | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  const copy = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(link);
+      setSaid("Copied");
+    } catch {
+      box.current?.focus();
+      box.current?.select();
+      setSaid("Could not copy it for you. The link is selected - press Ctrl+C.");
+    }
+  };
+  return (
+    <div className="mt-2">
+      <label className="block text-[11px] text-rce-soft">
+        Customer link (for texting by hand)
+        <input
+          ref={box}
+          readOnly
+          value={link}
+          onFocus={(e) => e.currentTarget.select()}
+          className="mt-1 w-full rounded border border-rce-border bg-transparent p-1 text-[11px]"
+        />
+      </label>
+      <button type="button" className="btn btn-secondary mt-1 w-full" onClick={() => void copy()}>
+        Copy customer link
+      </button>
+      <p className="mt-1 text-[11px] text-rce-soft">
+        It can't be opened from here: opening it counts as the customer viewing the estimate.
+      </p>
+      {said && <p role="status" className="mt-1 text-xs font-semibold text-emerald-800">{said}</p>}
     </div>
   );
 }

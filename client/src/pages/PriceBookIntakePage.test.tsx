@@ -702,3 +702,155 @@ describe("PriceBookIntakePage - Name on the estimate", () => {
     expect(screen.getAllByText(SIGNED).length).toBeGreaterThan(0);
   });
 });
+
+/*
+  ONE ESTIMATE, ONE LINK (Kyle, 2026-11-27; plan .claude/plans/2026-11-27-one-estimate-one-link.md).
+
+  Part 1: "that is supposed to track the customer opening the email and its spamming the CRM and my
+  email." "Open / print the estimate" and the clickable "Customer link:" both opened the customer's
+  own page, which needs no login - so every office preview was recorded as the customer's first
+  view and emailed a VIEWED alert. The CRM never opens that page now: the button opens the PDF
+  behind the session, and the link can only be copied.
+
+  Part 2: the words around "Save changes to the estimate" come from the server's answer
+  (lifecycle.savesInPlace before the press, replacedInPlace after it) and never promise a revision
+  the save does not make.
+*/
+describe("PriceBookIntakePage - an office preview is never a customer view", () => {
+  const LINK = "https://example.test/e/tok";
+
+  it("'Open / print the estimate' opens the session PDF of the customer copy, never the customer's link", async () => {
+    mockPage(issued({ status: "draft" }));
+    const tab = { location: { href: "" }, close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(["%PDF"]) } as Response);
+    const blobUrl = vi.fn(() => "blob:preview");
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: blobUrl });
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open / print the estimate" }));
+
+    await waitFor(() => expect(tab.location.href).toBe("blob:preview"));
+    // The customer-audience PDF (no ?audience=company), fetched with the session - not /e/<token>.
+    const pdfFetches = fetchSpy.mock.calls.map((c) => String(c[0])).filter((url) => url.includes("/pdf"));
+    expect(pdfFetches).toHaveLength(1);
+    expect(pdfFetches[0]).toMatch(/\/issued-estimates\/est-1\/pdf$/);
+    for (const call of [...open.mock.calls, ...fetchSpy.mock.calls]) expect(String(call[0])).not.toContain("/e/");
+  });
+
+  it("nothing on the screen links to the customer's page", async () => {
+    mockPage(issued({ status: "draft" }));
+    const { container } = renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await screen.findByRole("button", { name: "Copy customer link" });
+    expect(container.querySelector('a[href*="/e/"]')).toBeNull();
+    expect(screen.queryByRole("link", { name: /Open \/ print the estimate/ })).not.toBeInTheDocument();
+    // The link is still there to read and copy.
+    expect(screen.getByLabelText(/Customer link/)).toHaveValue(LINK);
+  });
+
+  it("'Copy customer link' puts the link on the clipboard and says Copied", async () => {
+    mockPage(issued({ status: "draft" }));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy customer link" }));
+
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith(LINK);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("when the browser refuses the clipboard, the link is selected and the screen says to press Ctrl+C", async () => {
+    mockPage(issued({ status: "draft" }));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy customer link" }));
+
+    expect(await screen.findByText(/The link is selected - press Ctrl\+C\./)).toBeInTheDocument();
+    const box = screen.getByLabelText(/Customer link/) as HTMLInputElement;
+    expect(box.selectionStart).toBe(0);
+    expect(box.selectionEnd).toBe(LINK.length);
+  });
+});
+
+describe("PriceBookIntakePage - 'Save changes to the estimate' says what it will do, and what it did", () => {
+  /** The compute payload with the server's lifecycle for est-1. */
+  function withLifecycle(savesInPlace: boolean) {
+    vi.spyOn(api, "pbCompute").mockResolvedValue({
+      discount: null,
+      computed: { lines: [], laborHours: 0, laborDollars: 0, materialSell: 0, subtotal: 0 } as never,
+      options: [],
+      money: { exclusiveOptions: false, range: null, discount: null, discountedTotal: null, discountedRange: null, pickable: [], selections: {} },
+      lifecycle: {
+        status: "draft",
+        issued: { estimateId: "est-1", number: "2026-1098", revision: 1, status: savesInPlace ? "draft" : "sent", signedAt: null, issuedAt: "2026-09-29T12:00:00.000Z", validDays: 30, figuresKey: "k", archived: false, savesInPlace, customerUrl: null },
+        hasUnsavedChanges: true, reviseReason: null, deleteReason: null, copyReason: null,
+      },
+    });
+  }
+
+  it("an estimate nobody outside the office has seen: the confirm promises the same link, and the save reports no new revision", async () => {
+    mockPage(issued({ status: "draft" }));
+    withLifecycle(true);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const revise = vi.spyOn(api, "pbIssuedRevise").mockResolvedValue({ revised: true, estimateId: "est-1", number: "2026-1098", revision: 1, replacedInPlace: true });
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    expect(await screen.findByText(/Pressing it saves your changes onto estimate 2026-1098 where it is - same number, same customer link, no new revision/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes to the estimate" }));
+
+    expect(confirm.mock.calls[0][0]).toMatch(/same customer link, no new revision/);
+    expect(confirm.mock.calls[0][0]).not.toMatch(/old link stops/);
+    await waitFor(() => expect(revise).toHaveBeenCalledWith("est-1"));
+    expect(await screen.findByText(/It was updated where it is: same number, same customer link, no new revision\./)).toBeInTheDocument();
+    expect(screen.queryByText(/old link no longer opens/)).not.toBeInTheDocument();
+  });
+
+  it("an estimate that has been sent: the confirm and the result both say revision, and that the old link stops", async () => {
+    mockPage(issued({ status: "sent", sentAt: "2026-09-29T13:00:00.000Z" }));
+    withLifecycle(false);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(api, "pbIssuedRevise").mockResolvedValue({ revised: true, estimateId: "est-2", number: "2026-1098", revision: 2 });
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save changes to the estimate" }));
+
+    expect(confirm.mock.calls[0][0]).toMatch(/as revision 2 \(same number\) and replaces the customer's link - their old link stops opening/);
+    expect(await screen.findByText(/Changes saved to 2026-1098 \(revision 2\)\. The customer's old link no longer opens/)).toBeInTheDocument();
+  });
+});
+
+/*
+  BACK TO THE ACCOUNT (Kyle, 2026-11-27, debug report on /estimate-intake): "I have no back button
+  here to go to his account. It needs added on this screen."
+
+  The account comes from `?account=`; a draft opened without it (a change order) uses the draft's own
+  account. A draft with no account (unattached, a lead's ballpark) has no account to go back to.
+*/
+describe("PriceBookIntakePage - Back to account", () => {
+  it("goes to the account named in the URL", async () => {
+    mockPage(null);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    const back = await screen.findByRole("link", { name: /Back to account/ });
+    expect(back).toHaveAttribute("href", "/accounts/acct-1");
+  });
+
+  it("uses the draft's own account when the URL has none (a change order)", async () => {
+    mockPage(null);
+    renderWithProviders(<PriceBookIntakePage />, { route: "/estimate-intake?draft=draft-1&tab=review" });
+    const back = await screen.findByRole("link", { name: /Back to account/ });
+    expect(back).toHaveAttribute("href", "/accounts/acct-1");
+  });
+
+  it("shows no button on a draft that has no account", async () => {
+    mockPage(null);
+    vi.spyOn(api, "pbReview").mockResolvedValue({ ...REVIEW, draft: { ...DRAFT, customerId: null, customer: null } as PbDraft });
+    renderWithProviders(<PriceBookIntakePage />, { route: "/estimate-intake?draft=draft-1&tab=review" });
+    await screen.findByText(/Estimate intake/);
+    await waitFor(() => expect(api.pbReview).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: /Back to account/ })).toBeNull();
+  });
+});

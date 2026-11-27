@@ -111,6 +111,22 @@ afterAll(async () => {
   await deleteAtomics([GOOD_A, GOOD_B, NO_LABOUR]);
 });
 
+/**
+ * Kyle, 2026-11-26 / 2026-11-27 ("It should replace what was edited not create more drafts that
+ * have to be deleted"; plan 2026-11-27-one-estimate-one-link): saving an estimate NOBODY OUTSIDE
+ * THE OFFICE HAS SEEN now updates it in place - same row, number, revision and link. A revision is
+ * what a save makes once the customer has been sent it. The tests in this file that pin the
+ * REVISION path therefore first put the estimate where a revision still happens: emailed, with the
+ * same columns the real send stamps (issuedEstimateSend.ts). The in-place path has its own file,
+ * tests/oneEstimateOneLink.test.ts.
+ */
+async function markSent(estimateId: string) {
+  await prisma.issuedEstimate.update({
+    where: { id: estimateId },
+    data: { sentAt: new Date(), sentBy: "human:test", sentTo: "sent-to@example.com", status: "sent" },
+  });
+}
+
 /** A draft attached to the job, carrying quotable lines. */
 async function quotableDraft(title: string) {
   const d = await createDraft(prisma, { title: `${MARK} ${title}`, supplierId: "HD", visitId });
@@ -553,6 +569,8 @@ describe("revisions", () => {
     const g = await graduateDraft(prisma, { draftId: d.id, accountId: customerId, serviceAddressId: propertyId });
     expect(g.ok).toBe(true);
     if (!g.ok) return;
+    // Sent first (Kyle, 2026-11-26): an unsent estimate is updated in place and is never superseded.
+    await markSent(g.estimateId);
     const first = await reviseEstimate(prisma, g.estimateId);
     expect(first.ok).toBe(true);
     const second = await reviseEstimate(prisma, g.estimateId);
@@ -1053,6 +1071,9 @@ describe("issuing a draft that already has a live estimate", () => {
       .post(`/price-book/drafts/${d.id}/issue`)
       .send({ accountId: customerId, serviceAddressId: propertyId })
       .expect(201);
+    // The customer has been sent it (Kyle, 2026-11-26): from here a re-issue is a revision. Before
+    // the send it is neither a second estimate NOR a revision - it is the same one, updated.
+    await markSent(first.body.estimateId);
 
     const second = await request(app)
       .post(`/price-book/drafts/${d.id}/issue`)
@@ -1081,6 +1102,8 @@ describe("issuing a draft that already has a live estimate", () => {
       .send({ accountId: customerId, serviceAddressId: propertyId })
       .expect(201);
     const old = await prisma.issuedEstimate.findUnique({ where: { id: first.body.estimateId } });
+    // Sent, so the re-issue REPLACES the link (Kyle, 2026-11-26: an unsent one keeps its link).
+    await markSent(first.body.estimateId);
 
     await request(app)
       .post(`/price-book/drafts/${d.id}/issue`)
@@ -1335,7 +1358,7 @@ describe("editing a draft after issue — Kyle's exact flow", () => {
   */
   it("reopens a finalized draft when nothing from it is signed", async () => {
     const d = await quotableDraft("reopen-edit");
-    await request(app)
+    const first = await request(app)
       .post(`/price-book/drafts/${d.id}/issue`)
       .send({ accountId: customerId, serviceAddressId: propertyId })
       .expect(201);
@@ -1353,12 +1376,16 @@ describe("editing a draft after issue — Kyle's exact flow", () => {
     const reopened = await prisma.priceBookDraftEstimate.findUnique({ where: { id: d.id } });
     expect(reopened!.status).toBe("draft");
 
-    // And the edited draft re-issues as a REVISION, not a duplicate.
+    // And the edited draft re-issues onto the SAME estimate, not a duplicate. This asserted
+    // "revision 2" until Kyle's 2026-11-26 ruling ("It should replace what was edited not create
+    // more drafts that have to be deleted"): nothing was sent, so the estimate is updated where it
+    // is - same row, same revision - and the route says so.
     const second = await request(app)
       .post(`/price-book/drafts/${d.id}/issue`)
       .send({ accountId: customerId, serviceAddressId: propertyId })
       .expect(201);
-    expect(second.body.revision).toBe(2);
+    expect(second.body).toMatchObject({ estimateId: first.body.estimateId, number: first.body.number, revision: 1, replacedInPlace: true });
+    expect(await prisma.issuedEstimate.count({ where: { draftId: d.id } })).toBe(1);
   });
 
   it("stays shut once a signature exists", async () => {

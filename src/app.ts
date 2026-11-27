@@ -168,7 +168,7 @@ import {
 import { inboundSmsRouter } from "./routes/inboundSms";
 import { confirmPageRouter } from "./routes/confirmPage";
 import { estimatePageRouter } from "./routes/estimatePage";
-import { createChangeOrderDraft, getDraftLifecycle, issueDraft, issueExtrasBodySchema, reviseEstimate } from "./services/issuedEstimateService";
+import { createChangeOrderDraft, getDraftLifecycle, issueDraft, issuedFiguresKey, issueExtrasBodySchema, reviseEstimate } from "./services/issuedEstimateService";
 import { inPersonSignBodySchema, signInPerson, signerContextOf } from "./services/inPersonSigning";
 import { renderEstimatePage, renderUnavailable } from "./services/issuedEstimateRender";
 import {
@@ -2602,10 +2602,13 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
     res.status(404).json({ error: "Estimate not found." });
     return;
   }
-  // The operator DOES get the link (customerLink) — it is how Kyle previews what the customer
-  // will see. The raw `token` itself never leaves the server (PUNCHLIST B5): it is the
-  // customer's unrevokable read-and-sign capability, and customerLink is the only thing built
-  // from it that a caller needs.
+  // The operator DOES get the link (customerLink) - to COPY, for when Kyle texts it by hand. It is
+  // no longer how he previews (Kyle, 2026-11-27): the customer's page needs no login, so opening
+  // it from the office was recorded as the customer's first view and emailed a VIEWED alert. The
+  // builder previews with the session PDF (GET /issued-estimates/:id/pdf) and only copies this.
+  // The raw `token` itself never leaves the server (PUNCHLIST B5): it is the customer's
+  // unrevokable read-and-sign capability, and customerLink is the only thing built from it that a
+  // caller needs.
   // `financingPlansJson` (2026-10-08, Phase 5) holds Synchrony's discount rates - Red Cedar's cost.
   // The office screen that presents this estimate to a customer fetches this row, so the column is
   // dropped here: a rate must not be one dev-tools tab away from the homeowner.
@@ -3107,6 +3110,9 @@ app.post("/issued-estimates/:id/unarchive", asyncHandler(async (req, res) => {
   res.json({ unarchived: true, status: result.status });
 }));
 
+// "Save changes to the estimate" (Estimate Intake). The answer carries `replacedInPlace: true` when
+// the estimate was updated where it is - nobody outside the office had seen it, so it keeps its id,
+// number, revision and customer link (Kyle, 2026-11-27) - and is a new revision otherwise.
 app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
   const body = z.object({ waiveTrip: z.boolean().optional() }).parse(req.body ?? {});
   const result = await reviseEstimate(prisma, String(req.params.id), {
@@ -3142,6 +3148,12 @@ app.post("/issued-estimates/:id/revise", asyncHandler(async (req, res) => {
  * Kyle can preview before handing the phone over).
  */
 app.get("/issued-estimates/:id/customer-view", asyncHandler(async (req, res) => {
+  // WHICH DOCUMENT THIS IS (one estimate, one link, 2026-11-27): the signing screen sends this key
+  // back with the signature, and applySignature refuses it when the estimate was saved in place
+  // after the customer started reading. Made BEFORE the estimate is read, so a save landing
+  // between the two can only produce a key that matches nothing (a refusal), never a pass.
+  const figuresKey = await issuedFiguresKey(prisma, String(req.params.id));
+  if (figuresKey) res.setHeader("X-Figures-Key", figuresKey);
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: String(req.params.id) },
     include: {

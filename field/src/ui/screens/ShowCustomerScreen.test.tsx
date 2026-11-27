@@ -436,6 +436,15 @@ describe('signFooter', () => {
     expect(signFooter(presentDecision(issuedLifecycle({ status: 'draft', hasUnsavedChanges: true })))).toMatch(/revision 2 \(same number\)/)
     expect(signFooter(presentDecision(issuedLifecycle()))).toMatch(/nothing has changed since/)
   })
+
+  // Kyle, 2026-11-27 (one estimate, one link): an estimate nobody outside the office has seen is
+  // updated where it is - the footer must not promise a revision or a replaced link for it.
+  it('an edited estimate nobody has been sent says it is saved where it is, with the same link', () => {
+    const footer = signFooter(presentDecision(issuedLifecycle({ status: 'draft', hasUnsavedChanges: true }, { status: 'draft', savesInPlace: true })))
+    expect(footer).toMatch(/onto estimate 2026-1098 where it is - same number, same customer link, no new revision/)
+    expect(footer).not.toMatch(/as revision|replaces the customer/)
+    expect(footer).toMatch(/then opens signing\.$/)
+  })
 })
 
 describe('runSignNow — issue first only when the shared rule says so', () => {

@@ -20,7 +20,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import type { DraftLifecycle } from '../../../../shared/draftLifecycle'
-import { SAVE_CHANGES_LABEL, nothingChangedReason } from '../../../../shared/draftLifecycle'
+import { SAVE_CHANGES_LABEL, nothingChangedReason, saveOutcome } from '../../../../shared/draftLifecycle'
 import { ESTIMATE_EMAIL_DEFAULTS, type EstimateEmailChoices } from '../../../../shared/estimateEmail'
 import { OFFLINE_CHANGE_ORDER_REASON } from './QuoteOffline'
 
@@ -127,7 +127,8 @@ export function TitleScopeEditor(props: {
       </label>
       {issuedNumber && (
         <p className="text-[11px] text-amber-200">
-          Reaches the customer when you press &quot;{SAVE_CHANGES_LABEL}&quot; — a new revision of {issuedNumber}.
+          {/* 2026-11-27: a save may update the estimate where it is, so this no longer promises a revision. */}
+          Reaches the customer when you press &quot;{SAVE_CHANGES_LABEL}&quot; — that puts it on estimate {issuedNumber}.
         </p>
       )}
       {error && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{error}</p>}
@@ -560,7 +561,8 @@ export function IssuedEstimatePanel(props: {
       <button
         type="button"
         disabled={reviseReason !== null}
-        title={reviseReason ?? `Reopens this quote; "${SAVE_CHANGES_LABEL}" then makes a new revision of ${issued.number}`}
+        // The server's answer (lifecycle.savesInPlace, 2026-11-27): updated where it is, or a new revision.
+        title={reviseReason ?? `Reopens this quote; "${SAVE_CHANGES_LABEL}" then ${saveOutcome(issued)}`}
         onClick={onEdit}
         className="w-full rounded-lg bg-emerald-700 p-3 text-sm font-semibold text-white disabled:opacity-40"
       >

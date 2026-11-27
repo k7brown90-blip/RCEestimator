@@ -35,7 +35,7 @@ export const WAITING_FOR_SIGNATURE = 'Waiting for the signature to reach the off
 export const SIGNATURE_REFUSED_BLOCK = 'The office refused the signature — have the customer sign again, or dismiss it on the card'
 export const REMOVE_FROM_PHONE_LABEL = 'Remove from this phone'
 /** "Edit the estimate" / Issue while a signature waits: a revision would get the waiting signature refused. */
-export const WAITING_FOR_SIGNATURE_EDIT = 'Waiting for the signature to reach the office — a change now would make a new revision and the office would refuse the signature the customer gave'
+export const WAITING_FOR_SIGNATURE_EDIT = 'Waiting for the signature to reach the office — a change now would change the estimate the customer signed and the office would refuse the signature they gave'
 export const CANCEL_SIGNATURE_LABEL = 'Cancel this signature (not recorded yet)'
 export const SIGN_AGAIN_LABEL = 'Sign again'
 export const DISMISS_LABEL = "I've called the customer — dismiss"

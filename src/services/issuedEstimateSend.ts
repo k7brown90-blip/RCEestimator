@@ -689,28 +689,110 @@ export async function sendEstimateEmail(
     includeFinancingLink?: boolean;
   }
 ): Promise<SendResult> {
-  const est = await prisma.issuedEstimate.findUnique({
+  const first = await readForSend(prisma, estimateId);
+  if (!first) return { ok: false, reason: "Estimate not found." };
+  const refusedFirst = sendRefusal(first);
+  if (refusedFirst) return { ok: false, reason: refusedFirst };
+
+  // THE ONE RECIPIENT RULE (services/emailCc.ts resolveRecipients) - the same check every customer send passes.
+  const recipients = resolveRecipients({ toOverride: opts.toOverride, onFile: first.customerEmail, cc: opts.cc });
+  if (!recipients.ok) return { ok: false, reason: recipients.reason };
+  const { to, cc } = recipients;
+
+  /*
+    ── THE SEND IS CLAIMED BEFORE THE FIGURES ARE READ (one estimate, one link, 2026-11-27) ──────
+    Kyle: "she got 4 emails and they show different pricing."
+
+    A save of an estimate nobody outside the office has seen now replaces it IN PLACE, under the
+    same link (reviseEstimate -> replaceInPlace). This function used to read the row, spend seconds
+    rendering reports and talking to the mail provider, and only then stamp it sent - so a save in
+    that gap still found it unseen, and rewrote the figures behind the link the email was already
+    carrying: one total in the email, another on the page, same number and revision.
+
+    So the send marks the estimate FIRST, under the same row lock the save takes, with a
+    "send_started" event. `estimateIsUnseen` does not count that event as the office's own, so
+    from this commit on every save is a revision. Then the row is read AGAIN, and the email is
+    built only from that second read. Whichever of the two got the lock first, the email and the
+    link agree:
+      - the save first: it finished in place, and this reads the replaced figures;
+      - the claim first: the save makes a revision, as every save did before this build.
+
+    The claim is removed when nothing was handed to the mail provider (a refusal below), and when
+    the send succeeded (the "sent" event and sentAt say it from then on). It STAYS when the
+    provider reported a failure: a message the provider choked on may still have gone, so later
+    saves are revisions - the plan's "when in doubt, it is a revision".
+  */
+  const claimId = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "IssuedEstimate" WHERE "id" = ${estimateId} FOR UPDATE`;
+    const claim = await tx.issuedEstimateEvent.create({
+      data: {
+        estimateId,
+        type: "send_started",
+        actor: opts.sentBy,
+        detail: `An email of this estimate to ${withCcText(to, cc)} was started and is not recorded as sent (it is still sending, or the mail service reported a failure). A save from here on makes a new revision.`,
+      },
+      select: { id: true },
+    });
+    return claim.id;
+  });
+  const claim = { id: claimId, handedToProvider: false };
+  try {
+    return await sendClaimedEstimateEmail(prisma, estimateId, opts, { to, cc }, claim);
+  } catch (err) {
+    // Something threw while the email was being built (a report would not render, a photo would
+    // not read): nothing reached the provider, so the estimate is not "sent" on that account.
+    if (!claim.handedToProvider) {
+      await prisma.issuedEstimateEvent.deleteMany({ where: { id: claimId } }).catch(() => undefined);
+    }
+    throw err;
+  }
+}
+
+/** The row an estimate email is built from. Read twice by sendEstimateEmail: before the claim, and after it. */
+function readForSend(prisma: PrismaClient, estimateId: string) {
+  return prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
     include: { supersededBy: { select: { id: true } }, options: { select: { option: true, subtotal: true } } },
   });
-  if (!est) return { ok: false, reason: "Estimate not found." };
-  if (est.supersededBy) {
-    return { ok: false, reason: "This estimate has been superseded by a newer revision. Send that one instead." };
-  }
-  if (est.status === "void") return { ok: false, reason: "This estimate is void." };
+}
+
+/** Why this estimate cannot be emailed, or null. Asked of both reads. */
+function sendRefusal(row: NonNullable<Awaited<ReturnType<typeof readForSend>>>): string | null {
+  if (row.supersededBy) return "This estimate has been superseded by a newer revision. Send that one instead.";
+  if (row.status === "void") return "This estimate is void.";
   // Sending IS re-opening the conversation (2026-09-20). Reopen first so the funnel reads the
   // truth — a quote out with the customer is not a lost one — and so a resend cannot quietly
   // put a lost estimate back on the Sent card with its lost record still attached.
-  if (est.status === "lost") return { ok: false, reason: "This estimate is marked lost. Reopen it first, then send it again." };
+  if (row.status === "lost") return "This estimate is marked lost. Reopen it first, then send it again.";
   // Archived (2026-10-01) is put away, not sent: unarchiving is one click on the drawer and says
   // on the trail that a person chose to keep this one in play.
-  if (est.archivedAt) return { ok: false, reason: "This estimate is archived. Unarchive it first, then send it again." };
-  if (est.signedAt) return { ok: false, reason: "This estimate is already signed." };
+  if (row.archivedAt) return "This estimate is archived. Unarchive it first, then send it again.";
+  if (row.signedAt) return "This estimate is already signed.";
+  return null;
+}
 
-  // THE ONE RECIPIENT RULE (services/emailCc.ts resolveRecipients) - the same check every customer send passes.
-  const recipients = resolveRecipients({ toOverride: opts.toOverride, onFile: est.customerEmail, cc: opts.cc });
-  if (!recipients.ok) return { ok: false, reason: recipients.reason };
-  const { to, cc } = recipients;
+/**
+ * The rest of sendEstimateEmail, after its claim: read the estimate AGAIN and build, send and stamp
+ * the email from that read only. Never called from anywhere else - the claim is what makes the
+ * figures read here the figures the customer's link will keep showing.
+ */
+async function sendClaimedEstimateEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: Parameters<typeof sendEstimateEmail>[2],
+  { to, cc }: { to: string; cc: string[] },
+  claim: { id: string; handedToProvider: boolean },
+): Promise<SendResult> {
+  const claimId = claim.id;
+  const notSent = async (reason: string): Promise<SendResult> => {
+    await prisma.issuedEstimateEvent.deleteMany({ where: { id: claimId } });
+    return { ok: false, reason };
+  };
+
+  const est = await readForSend(prisma, estimateId);
+  if (!est) return { ok: false, reason: "Estimate not found." };
+  const refusedNow = sendRefusal(est);
+  if (refusedNow) return notSent(refusedNow);
 
   const link = estimateLink(est.token);
   const firstName = est.customerName.trim().split(/\s+/)[0] || est.customerName;
@@ -761,7 +843,7 @@ export async function sendEstimateEmail(
       select: { id: true, loadCalcJson: true },
     });
     if (!inspection) {
-      return { ok: false, reason: "No electrical assessment is on file for this address — the report attachments can't be produced." };
+      return notSent("No electrical assessment is on file for this address — the report attachments can't be produced.");
     }
     if (opts.attachHealthReport) {
       const report = await generateHealthReport(inspection.id);
@@ -773,7 +855,7 @@ export async function sendEstimateEmail(
     }
     if (opts.attachGeneratorReport) {
       if (!inspection.loadCalcJson) {
-        return { ok: false, reason: "This address's assessment has no load calculation — the generator sizing sheet can't be produced." };
+        return notSent("This address's assessment has no load calculation — the generator sizing sheet can't be produced.");
       }
       const report = await generateGeneratorReport(inspection.id);
       docAttachments.push({
@@ -785,6 +867,7 @@ export async function sendEstimateEmail(
   }
 
   const allAttachments = [...docAttachments, ...photos.attachments];
+  claim.handedToProvider = true;
   const sent = await sendBrandedEmail({
     to,
     ...(cc.length > 0 ? { cc } : {}),
@@ -825,6 +908,8 @@ export async function sendEstimateEmail(
         detail: `Emailed to ${withCcText(to, cc)} (rev ${est.revision})`,
       },
     });
+    // The claim has done its job: sentAt and the "sent" event say it from here on.
+    await tx.issuedEstimateEvent.deleteMany({ where: { id: claimId } });
   });
 
   logSystemEvent("info", "issued-estimate", `Estimate ${est.number} emailed to ${withCcText(to, cc)}`, {

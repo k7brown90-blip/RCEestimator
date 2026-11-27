@@ -45,6 +45,10 @@ export function SigningModePage() {
   const selectedOptions = (location.state as { selectedOptions?: string[] } | null)?.selectedOptions;
   const [phase, setPhase] = useState<Phase>("reviewing");
   const [html, setHtml] = useState<string | null>(null);
+  // Which document is on screen: the server's fingerprint of the page it rendered. Sent back with
+  // the signature, so the office saving this estimate from another tab (or the technician issuing
+  // it again) while the customer reads cannot put their signature on the changed version.
+  const [figuresKey, setFiguresKey] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [signerName, setSignerName] = useState("");
   const [agreed, setAgreed] = useState(false);
@@ -72,7 +76,9 @@ export function SigningModePage() {
   const load = useCallback(async () => {
     if (!estimateId) return;
     try {
-      setHtml(await api.pbCustomerView(estimateId, selectedOptions));
+      const view = await api.pbCustomerView(estimateId, selectedOptions);
+      setHtml(view.html);
+      setFiguresKey(view.figuresKey);
       setLoadError(null);
     } catch (err) {
       setLoadError((err as ApiError).message);
@@ -99,13 +105,16 @@ export function SigningModePage() {
     }
     setSigning(true);
     try {
-      const result = await api.pbSignInPerson(estimateId, signerName.trim(), signature, selectedOptions);
+      const result = await api.pbSignInPerson(estimateId, signerName.trim(), signature, selectedOptions, figuresKey);
       setJobVisitId(result.jobVisitId ?? null);
       setJobJoined(Boolean(result.jobJoined));
       await load();
       setPhase("signed");
     } catch (err) {
+      // Nothing was recorded. The estimate is loaded again, so if it was changed while the customer
+      // was reading, what is on screen now is the current one and the next signature is for it.
       setSignError((err as Error).message);
+      await load();
     } finally {
       setSigning(false);
     }

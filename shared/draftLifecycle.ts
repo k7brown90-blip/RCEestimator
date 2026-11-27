@@ -46,6 +46,18 @@ export interface DraftLifecycleIssued {
    */
   archived: boolean;
   /**
+   * What "Save changes to the estimate" will DO to this estimate (Kyle, 2026-11-27: "It should
+   * replace what was edited not create more drafts that have to be deleted").
+   *
+   * True: nobody outside the office has been sent it, opened it, signed it or paid on it, so the
+   * save UPDATES IT IN PLACE - same number, same revision, same customer link. False: somebody has
+   * (or may have), so the save makes a NEW REVISION and the old link stops opening. Decided on the
+   * server by the same test the save itself runs (issuedEstimateService.estimateIsUnseen); the
+   * screens word their buttons from it and never work it out themselves. Absent only on a copy
+   * saved to a phone before this field existed, which reads as a revision.
+   */
+  savesInPlace?: boolean;
+  /**
    * The tokenized customer page, for the technician's "Open the customer's estimate to review &
    * sign". Filled by the TECH route only (built with estimateLink, never the raw token); the CRM
    * reads the link from GET /issued-estimates/:id and gets null here.
@@ -119,10 +131,32 @@ export const FIELD_SIGNED_REVISE_REASON =
 /** The issue button's words when a live estimate exists, from this draft, in either app. */
 export const SAVE_CHANGES_LABEL = "Save changes to the estimate";
 
+/**
+ * What pressing "Save changes to the estimate" does to the estimate, in ONE sentence both apps
+ * print BEFORE the press - so no screen promises a revision the save will not make, or the reverse
+ * (Kyle, 2026-11-27, one estimate, one link). A clause that follows "This" / "Sign now" / "Either
+ * action"; it ends without a full stop and the caller punctuates.
+ */
+export function saveOutcome(issued: Pick<DraftLifecycleIssued, "number" | "revision" | "savesInPlace">): string {
+  return issued.savesInPlace
+    ? `saves your changes onto estimate ${issued.number} where it is - same number, same customer link, no new revision (nobody outside the office has been sent it or opened it yet)`
+    : `saves your changes to estimate ${issued.number} as revision ${issued.revision + 1} (same number) and replaces the customer's link - their old link stops opening`;
+}
+
+/**
+ * What a save DID, for the line a screen shows after it (the server's GraduateResult carries
+ * `replacedInPlace`). Never claims a revision that was not made.
+ */
+export function savedOutcome(saved: { number: string; revision: number; replacedInPlace?: boolean }): string {
+  return saved.replacedInPlace
+    ? `Changes saved to estimate ${saved.number}. It was updated where it is: same number, same customer link, no new revision. Nothing has been sent.`
+    : `Changes saved to ${saved.number} (revision ${saved.revision}). The customer's old link no longer opens — send the new one.`;
+}
+
 /** Why "Save changes to the estimate" is greyed when nothing on the draft has changed since it was issued. */
 export function nothingChangedReason(issued: Pick<DraftLifecycleIssued, "number" | "revision">): string {
   return (
     `Nothing has changed since estimate ${issued.number} rev ${issued.revision} was issued — saving would only ` +
-    `replace the customer's link with an identical copy. Edit the quote first.`
+    `put an identical copy in its place. Edit the quote first.`
   );
 }

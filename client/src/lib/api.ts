@@ -781,7 +781,7 @@ export interface MaterialPromoteInput {
   companyCost?: number | null;
 }
 
-async function requestHtml(path: string): Promise<string> {
+async function requestHtml(path: string): Promise<{ html: string; figuresKey: string | null }> {
   const token = sessionToken();
   const response = await fetch(`${API_BASE}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -791,7 +791,8 @@ async function requestHtml(path: string): Promise<string> {
       status: response.status,
     });
   }
-  return response.text();
+  // X-Figures-Key: the server's fingerprint of the document it just rendered (customer-view only).
+  return { html: await response.text(), figuresKey: response.headers.get("X-Figures-Key") };
 }
 
 /**
@@ -2202,7 +2203,8 @@ export const api = {
       addToCurrentJob?: boolean;
     }
   ) =>
-    request<{ issued: true; estimateId: string; number: string; revision: number; unpriced?: string[] }>(
+    // `replacedInPlace` (2026-11-27): true when the press updated the live estimate where it is.
+    request<{ issued: true; estimateId: string; number: string; revision: number; unpriced?: string[]; replacedInPlace?: boolean }>(
       `/price-book/drafts/${draftId}/issue`,
       { method: "POST", body: JSON.stringify(input) }
     ),
@@ -2323,6 +2325,9 @@ export const api = {
   // ── In-person signing (P028; device lock removed 2026-08-18 on Kyle's instruction) ──
   // `selectedOptions`: what the office chose on Present - a one-or-the-other estimate paints that one
   // option's price (the iframe runs no script), never the sum of all options (Kyle, 2026-11-18).
+  // Returns the page AND `figuresKey`, the server's fingerprint of the document it rendered. The
+  // signing screen sends the key back with the signature (pbSignInPerson), so a signature is never
+  // recorded against an estimate that was saved after the customer started reading (2026-11-27).
   pbCustomerView: (id: string, selectedOptions?: readonly string[]) =>
     requestHtml(`/issued-estimates/${id}/customer-view${selectedOptions?.length ? `?selectedOptions=${encodeURIComponent(selectedOptions.join(","))}` : ""}`),
 
@@ -2341,7 +2346,7 @@ export const api = {
       { method: "POST" },
     ),
 
-  pbSignInPerson: (id: string, signerName: string, signatureImage: string, selectedOptions?: string[]) =>
+  pbSignInPerson: (id: string, signerName: string, signatureImage: string, selectedOptions?: string[], figuresKey?: string | null) =>
     // jobVisitId: the job auto-created from the signed quote, so the signed screen can go
     // straight to the calendar to schedule it. Null when creation was refused or failed —
     // the signature itself is already durable either way.
@@ -2352,7 +2357,9 @@ export const api = {
       `/issued-estimates/${id}/sign-in-person`,
       {
         method: "POST",
-        body: JSON.stringify({ signerName, signatureImage, ...(selectedOptions ? { selectedOptions } : {}) }),
+        // figuresKey: which document the customer was shown (from pbCustomerView). The server
+        // refuses the signature when the estimate has been saved since.
+        body: JSON.stringify({ signerName, signatureImage, ...(selectedOptions ? { selectedOptions } : {}), ...(figuresKey ? { figuresKey } : {}) }),
       },
     ),
 
@@ -2517,7 +2524,9 @@ export const api = {
   testAccountDelete: () => request<{ deleted: boolean; counts: { estimates: number; drafts: number; visits: number; properties: number } }>("/test-account", { method: "DELETE" }),
 
   pbIssuedRevise: (id: string) =>
-    request<{ revised: true; estimateId: string; number: string; revision: number }>(
+    // `replacedInPlace` (2026-11-27): true when the save updated the estimate where it is - same
+    // id, number, revision and customer link - because nobody outside the office had seen it.
+    request<{ revised: true; estimateId: string; number: string; revision: number; replacedInPlace?: boolean }>(
       `/issued-estimates/${id}/revise`,
       { method: "POST", body: JSON.stringify({}) }
     ),

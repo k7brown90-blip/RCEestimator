@@ -145,7 +145,7 @@ import { priceCheck } from '../../lib/priceCheck'
 import { describeQuoteOp, type QuoteOpWordsLookup } from '../../lib/quoteOpWords'
 import type { FindingRecord } from '../../db/database'
 import type { EstimateOptionLetter } from '../../../../shared/estimateOptions'
-import { SAVE_CHANGES_LABEL } from '../../../../shared/draftLifecycle'
+import { SAVE_CHANGES_LABEL, saveOutcome } from '../../../../shared/draftLifecycle'
 import { QuoteOptionBoard } from './QuoteOptionBoard'
 import { QuoteCatalogPicker } from './QuoteCatalogPicker'
 import { AddingIntoBar, OptionModeAndCopy, QuoteTotals } from './QuoteSettings'
@@ -1099,8 +1099,7 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
       {issued && !lockedReason && (
         <p className="rounded bg-amber-950/60 p-2 text-xs text-amber-200">
           Editing estimate {issued.number}{issued.revision > 1 ? ` rev ${issued.revision}` : ''}. Nothing reaches the
-          customer until you press &quot;{SAVE_CHANGES_LABEL}&quot; below — that makes a new revision (same number) and
-          replaces their link.
+          customer until you press &quot;{SAVE_CHANGES_LABEL}&quot; below — that {saveOutcome(issued)}.
           {!lifecycle?.hasUnsavedChanges && (
             <>
               {' '}

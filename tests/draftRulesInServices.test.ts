@@ -388,6 +388,9 @@ describe("issueDraft decides once, for both doors", () => {
     const d = await quotableDraft("issue-actor-tech");
     const first = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
     expect(first.status, JSON.stringify(first.body)).toBe(201);
+    // Sent, so the re-issue is a revision (Kyle, 2026-11-26, plan 2026-11-27-one-estimate-one-link:
+    // an estimate nobody outside the office has seen is updated in place and has no second row).
+    await prisma.issuedEstimate.update({ where: { id: first.body.data.estimateId }, data: { sentAt: new Date(), sentBy: "human:test", sentTo: "sent-to@example.com", status: "sent" } });
     const second = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
     expect(second.status, JSON.stringify(second.body)).toBe(201);
     const a = await prisma.issuedEstimate.findUniqueOrThrow({ where: { id: first.body.data.estimateId } });
@@ -410,14 +413,34 @@ describe("issueDraft decides once, for both doors", () => {
     expect(await prisma.issuedEstimate.count({ where: { draftId: d.id } })).toBe(1);
   });
 
-  it("field: an unsigned re-issue still revises (same number, revision up) — nothing else changed", async () => {
+  // Changed deliberately (Kyle, 2026-11-26, plan 2026-11-27-one-estimate-one-link): "unsigned" alone
+  // no longer means a revision. Unsigned and SENT revises, as pinned here; unsigned and never sent is
+  // updated in place, pinned in the test after this one and in tests/oneEstimateOneLink.test.ts.
+  it("field: an unsigned re-issue of a SENT estimate still revises (same number, revision up) — nothing else changed", async () => {
     const d = await quotableDraft("issue-revise-tech");
     const first = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
     expect(first.status, JSON.stringify(first.body)).toBe(201);
+    await prisma.issuedEstimate.update({ where: { id: first.body.data.estimateId }, data: { sentAt: new Date(), sentBy: "human:test", sentTo: "sent-to@example.com", status: "sent" } });
     const second = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
     expect(second.status, JSON.stringify(second.body)).toBe(201);
     expect(second.body.data.number).toBe(first.body.data.number);
     expect(second.body.data.estimateId).not.toBe(first.body.data.estimateId);
+  });
+
+  it("field: a re-issue of an estimate nobody has been sent keeps the SAME estimate and the SAME customer link (Kyle, 2026-11-26)", async () => {
+    const d = await quotableDraft("issue-in-place-tech");
+    const first = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const second = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(second.body.data.estimateId).toBe(first.body.data.estimateId);
+    expect(second.body.data.number).toBe(first.body.data.number);
+    expect(second.body.data.customerUrl).toBe(first.body.data.customerUrl);
+    const rows = await prisma.issuedEstimate.findMany({ where: { draftId: d.id }, include: { events: true } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].revision).toBe(1);
+    // The audit trail names the technician on the save, as a revision always has.
+    expect(rows[0].events.filter((e) => e.type === "updated").map((e) => e.actor)).toEqual([`tech:${MARK} Tech`]);
   });
 });
 

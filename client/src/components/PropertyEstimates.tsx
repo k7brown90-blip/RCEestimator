@@ -5,6 +5,7 @@ import { DeliveryChip } from "./DeliveryChip";
 import { OpenDrawerButton } from "./drawers/OpenDrawerButton";
 import { useDrawerParams } from "../lib/drawers";
 import { api, openProtectedPdf } from "../lib/api";
+import type { PbIssuedEstimate } from "../lib/types";
 import { money } from "../lib/utils";
 import { quotedRangeText } from "../../../shared/quoteMoney";
 
@@ -17,6 +18,35 @@ import { quotedRangeText } from "../../../shared/quoteMoney";
  * gone. Same server read (`GET /accounts/:id/estimates?serviceAddressId=`), same rows, same
  * drawer — only the home changed.
  */
+/**
+ * ONE CARD PER ESTIMATE NUMBER (Kyle, 2026-11-27, screenshot of one number listed five times:
+ * "see how each draft creates a new document. I am tired of it").
+ *
+ * The server sends every revision. The card is the NEWEST revision of each number - the one the
+ * customer's link opens and the one to act on - and the ones it replaced fold under it as "Earlier
+ * revisions (n)". They are not dropped: each keeps its Open (the drawer, where Delete lives) and
+ * its View, because nothing the app creates may be left without a way out. The Estimates page
+ * already files superseded rows behind a toggle (EstimatesPage classify); this matches it.
+ *
+ * Newest = the highest revision present. (After a later revision is deleted, the one before it is
+ * live again - so "has no supersededBy" can be true of two rows, and the revision number cannot.)
+ * Order of the cards is the server's: the first row seen for a number places its card.
+ */
+export function groupByEstimateNumber<T extends { number: string; revision: number }>(
+  rows: readonly T[],
+): Array<{ live: T; earlier: T[] }> {
+  const byNumber = new Map<string, T[]>();
+  for (const row of rows) {
+    const group = byNumber.get(row.number);
+    if (group) group.push(row);
+    else byNumber.set(row.number, [row]);
+  }
+  return [...byNumber.values()].map((group) => {
+    const newestFirst = [...group].sort((a, b) => b.revision - a.revision);
+    return { live: newestFirst[0], earlier: newestFirst.slice(1) };
+  });
+}
+
 export function PropertyEstimates({
   accountId,
   propertyId,
@@ -41,12 +71,13 @@ export function PropertyEstimates({
     queryFn: () => api.accountEstimates(accountId, propertyId),
   });
   const rows = data?.estimates ?? [];
+  const groups = groupByEstimateNumber<PbIssuedEstimate>(rows);
 
   return (
     <section className="card mb-5 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">
-          Estimates <span className="text-sm font-normal text-rce-muted">({rows.length})</span>
+          Estimates <span className="text-sm font-normal text-rce-muted">({groups.length})</span>
         </h2>
       </div>
 
@@ -85,7 +116,7 @@ export function PropertyEstimates({
         does not pretend to be.
       */}
       <div className="mt-3 space-y-2">
-        {rows.map((e) => {
+        {groups.map(({ live: e, earlier }) => {
           const unfinished = e.status === "draft";
           return (
             <div
@@ -189,6 +220,39 @@ export function PropertyEstimates({
                   </button>
                 )}
               </div>
+
+              {/* The revisions this one replaced - folded, each with its own Open and View. */}
+              {earlier.length > 0 && (
+                <details className="mt-2 rounded border border-rce-border/50 p-2">
+                  <summary className="cursor-pointer text-xs font-medium text-rce-muted">
+                    Earlier revisions ({earlier.length})
+                  </summary>
+                  <p className="mt-1 text-[11px] text-rce-soft">
+                    Replaced by rev {e.revision}. Their customer links no longer open. Open one to delete it.
+                  </p>
+                  <div className="mt-2 space-y-2">
+                    {earlier.map((old) => (
+                      <div key={old.id} className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs text-rce-soft">
+                          rev {old.revision} · <span className="uppercase tracking-wide">{old.status}</span> ·{" "}
+                          {old.quotedRange ? quotedRangeText(old.quotedRange, money) : money(old.billedTotal ?? old.total)} ·{" "}
+                          {new Date(old.createdAt).toLocaleDateString()}
+                        </p>
+                        <div className="flex gap-2">
+                          <OpenDrawerButton kind="estimate" id={old.id} onOpen={drawers.open} label={`Open rev ${old.revision}`} className="btn btn-secondary text-xs" />
+                          <button
+                            type="button"
+                            onClick={() => void openProtectedPdf(`/issued-estimates/${old.id}/pdf?audience=company`)}
+                            className="btn btn-secondary text-xs"
+                          >
+                            View rev {old.revision}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           );
         })}

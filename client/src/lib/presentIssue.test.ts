@@ -44,6 +44,15 @@ describe("presentDecision", () => {
     expect(presentFooter(d)).toContain("as revision 2 (same number)");
   });
 
+  // Kyle, 2026-11-27 (one estimate, one link): an estimate nobody outside the office has seen is
+  // updated where it is, and the footer must not promise a revision or a replaced link then.
+  it("issued, EDITED since, and nobody outside the office has seen it: the footer says it is saved where it is", () => {
+    const d = presentDecision(base({ status: "draft", hasUnsavedChanges: true, issued: { ...base().issued!, status: "draft", savesInPlace: true } }));
+    expect(d).toEqual({ kind: "issue", revises: { number: "2026-1098", revision: 1, savesInPlace: true } });
+    expect(presentFooter(d)).toContain("where it is - same number, same customer link, no new revision");
+    expect(presentFooter(d)).not.toMatch(/as revision|replaces the customer/);
+  });
+
   it("SIGNED: reused as it stands; Sign now AND Email are greyed with why (the send refuses a signed estimate)", () => {
     const d = presentDecision(base({ issued: { ...base().issued!, status: "signed", signedAt: "2026-10-08T12:00:00.000Z" } }));
     expect(d.kind).toBe("reuse");
