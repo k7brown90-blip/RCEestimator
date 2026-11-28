@@ -608,7 +608,8 @@ describe("the programme discount, on the document", () => {
   *"do not forget the apr %."*
 
   The final layout: a heading, one line per active plan in Settings order, and the Synchrony link.
-  No per-option table, no deposit/fee note, no "Financing terms" page. The figures are the shared
+  No per-option table, no fee note, no "Financing terms" page. (Kyle, 2026-11-27: ONE deposit sentence
+  under the link - "when someone chooses financing it needs to be clear they pay a deposit still".) The figures are the shared
   calculator's (shared/financing.ts) - these tests compare the PDF to `buildQuoteFinancing`, and pin
   one $1,350 total by hand so a bug shared by both would still show. Synchrony's discount rates
   (Red Cedar's cost) never appear.
@@ -674,6 +675,9 @@ describe("the customer's PDF carries the Synchrony financing options", () => {
     expect(expectedLines(PLANS, 1350)).toEqual(pinned);
     // The link follows the last plan line.
     expect(text).toContain(sectionFlat(pinned) + flat(`Finance this project: ${SYNCHRONY_URL}`));
+    // Kyle, 2026-11-27: under the link, the same one line the estimate email carries - the deposit worked on
+    // this printed total ($1,350 -> $450.00), no credit term in it.
+    expect(text).toContain(flat(`Finance this project: ${SYNCHRONY_URL}`) + flat("Financing covers the balance. The one-third deposit of $450.00 is still paid up front, before we schedule."));
     // The section sits under the printed total.
     expect(text.indexOf(flat(HEADING))).toBeGreaterThan(text.indexOf("ESTIMATETOTAL"));
   });
@@ -701,13 +705,17 @@ describe("the customer's PDF carries the Synchrony financing options", () => {
     expect(buf.toString("latin1")).toContain(`/URI (${url})`);
   });
 
-  it("is lines and a link only: no table, no deposit/fee note, no Financing terms page, no plan descriptions", async () => {
+  // The old title said "no deposit/fee note". SUPERSEDED 2026-11-27 (Kyle: "when someone chooses financing it
+  // needs to be clear they pay a deposit still"): exactly one deposit SENTENCE is printed (pinned just above and
+  // below); there is still no table, no fee note, no terms page and no plan descriptions.
+  it("is lines, a link and one deposit sentence: no table, no fee note, no Financing terms page, no plan descriptions", async () => {
     const buf = await renderEstimatePdf(withFin(), "customer", PROFILE);
     const text = pdfFlat(buf);
     expect(text).toContain(flat(HEADING)); // paired presence
     expect(text).not.toContain(flat("Financing terms"));
     expect(text).not.toContain(flat("Selection")); // the old table's header
     expect(text).not.toContain(flat("All options")); // the old table's row
+    expect(text).toContain(flat("The one-third deposit of $450.00 is still paid up front")); // paired: the one sentence IS there
     expect(text).not.toContain(flat("1/3 deposit"));
     expect(text).not.toContain(flat("financing fee"));
     expect(text).not.toContain(flat("Estimated monthly payments"));
@@ -742,6 +750,7 @@ describe("the customer's PDF carries the Synchrony financing options", () => {
     expect(text).not.toContain(flat("Finance this project"));
     expect(text).not.toContain(SYNCHRONY_URL);
     expect(text).not.toContain("/mo");
+    expect(text).not.toContain(flat("one-third deposit")); // the deposit sentence rides with the financing section only
   });
 
   it("prints nothing when no financing is passed", async () => {
@@ -793,6 +802,47 @@ describe("the customer's PDF carries the Synchrony financing options", () => {
     expect(text).toContain("YOURTOTAL");
     expect(text).toContain(sectionFlat(expectedLines(PLANS, 1350, 500)));
     expect(text).not.toContain(sectionFlat(expectedLines(PLANS, 1350)));
+    // The deposit sentence's amount is the same calculator's, on the same share: a third of $850.00.
+    expect(text).toContain(flat("The one-third deposit of $283.33 is still paid up front"));
+  });
+
+  // Kyle, 2026-11-27: the deposit sentence names the deposit the customer is ACTUALLY asked for, and is
+  // left out once a required deposit is already in.
+  it("no deposit sentence once the deposit is already in", async () => {
+    for (const deposit of [{ asked: false, due: 0 }, { asked: false, due: 450 }]) {
+      const text = pdfFlat(await renderEstimatePdf(withFin({ financing: { plans: PLANS, deposit } }), "customer", PROFILE));
+      expect(text).toContain(flat(HEADING)); // paired: the financing section IS there
+      expect(text).not.toContain(flat("one-third deposit"));
+    }
+  });
+
+  // Decision 8: no no-deposit financing. "Deposit required" unticked on a signed invoice (no amount
+  // asked yet) still says the deposit is paid, worded without an amount.
+  it("\"Deposit required\" unticked still prints the deposit sentence, without an amount", async () => {
+    const text = pdfFlat(await renderEstimatePdf(withFin({ financing: { plans: PLANS, deposit: { asked: true, due: null } } }), "customer", PROFILE));
+    expect(text).toContain(flat("Financing covers the balance. The one-third deposit is still paid up front, before we schedule."));
+  });
+
+  it("a signed invoice with a change order that asks for no deposit prints the deposit asked, not a third of the whole invoice", async () => {
+    const signed = withFin({
+      financing: { plans: PLANS, deposit: { asked: true, due: 450 } },
+      signedAt: new Date("2026-10-09T10:00:00Z"), signedByName: "A Customer",
+      selectedOptions: ["A" as const, "B" as const],
+      invoice: {
+        number: "2026-1099",
+        documents: [
+          { number: "2026-1099", title: "Fans and bonding", kind: "invoice", billedTotal: 1350, signedAt: new Date("2026-10-09T10:00:00Z") },
+          { number: "2026-1099-CO1", title: "Extra outlet", kind: "change_order", billedTotal: 600, signedAt: new Date("2026-10-10T10:00:00Z") },
+        ],
+        billedTotal: 1950,
+        totalPaid: 0,
+        balance: 1950,
+        financingFee: null,
+      },
+    });
+    const text = pdfFlat(await renderEstimatePdf(signed, "customer", PROFILE));
+    expect(text).toContain(flat("The one-third deposit of $450.00 is still paid up front")); // what paymentSummary asks
+    expect(text).not.toContain(flat("$650.00 is still paid up front")); // a third of the whole $1,950 invoice
   });
 
   it("only the plans passed are printed (a two-plan snapshot)", async () => {

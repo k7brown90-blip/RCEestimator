@@ -24,6 +24,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { prisma } from "../src/lib/prisma";
 import { app } from "../src/app";
+import { FINANCING_LINK_DEPOSIT_SENTENCE } from "../shared/financingDisplay";
 import { createDraft, addLine } from "../src/services/atomicEstimateService";
 import { graduateDraft } from "../src/services/issuedEstimateService";
 import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
@@ -160,6 +161,42 @@ describe("services/financingEmail — sendFinancingEmail", () => {
       expect(String(call.bodyHtml)).toContain(financingUrl);
       expect(String(call.bodyHtml)).not.toMatch(FORBIDDEN_CREDIT_TERMS);
       expect(String(call.subject)).not.toMatch(FORBIDDEN_CREDIT_TERMS);
+      // Kyle, 2026-11-27 ("when someone chooses financing it needs to be clear they pay a deposit
+      // still"): the ONE deposit sentence is in the body - and the credit-terms ban above, run on the
+      // whole body, proves the sentence itself states no credit term.
+      expect(FINANCING_LINK_DEPOSIT_SENTENCE).toBe(
+        "Financing covers the balance after the one-third deposit. The deposit is still paid to Red Cedar Electric up front, before we schedule the work.",
+      );
+      expect(String(call.bodyHtml)).toContain(FINANCING_LINK_DEPOSIT_SENTENCE);
+      expect(FINANCING_LINK_DEPOSIT_SENTENCE).not.toMatch(FORBIDDEN_CREDIT_TERMS);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// Decision 8: no no-deposit financing, so "Deposit required" unticked still carries the sentence; a
+// change order's deposit belongs to its root, so it carries none.
+describe("the financing link email's deposit sentence (Kyle, 2026-11-27)", () => {
+  it("is kept when \"Deposit required\" is unticked, and left out of a change order", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendFinancingEmail } = await import("../src/services/financingEmail");
+
+      const noDeposit = await issuedEstimateId("no-deposit");
+      await prisma.issuedEstimate.update({ where: { id: noDeposit }, data: { depositRequired: false } });
+      expect((await sendFinancingEmail(prisma, noDeposit)).ok).toBe(true);
+      const a = String(spy.mock.calls.at(-1)![0].bodyHtml);
+      expect(a).toContain("Apply for financing");
+      expect(a).toContain(FINANCING_LINK_DEPOSIT_SENTENCE);
+
+      const root = await issuedEstimateId("co-root");
+      const co = await issuedEstimateId("co-child");
+      await prisma.issuedEstimate.update({ where: { id: co }, data: { changeOrderForId: root, depositRequired: true } });
+      expect((await sendFinancingEmail(prisma, co)).ok).toBe(true);
+      expect(String(spy.mock.calls.at(-1)![0].bodyHtml)).not.toContain(FINANCING_LINK_DEPOSIT_SENTENCE);
+      await prisma.issuedEstimate.update({ where: { id: co }, data: { changeOrderForId: null } });
     } finally {
       spy.mockRestore();
     }

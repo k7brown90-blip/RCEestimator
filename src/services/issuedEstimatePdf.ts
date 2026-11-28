@@ -41,6 +41,7 @@ import type { WarrantyClaim } from "./stripePayments";
 import { warrantyCompanyLine, warrantyNoticeText, warrantyRowLabel } from "./warrantyNotice";
 import {
   drawFinancingOptions,
+  financingDepositLineFor,
   financingLinesFor,
   type PdfFinancing,
 } from "./issuedEstimatePdfFinancing";
@@ -490,11 +491,13 @@ export async function renderEstimatePdf(
     the total printed just above. Final layout
     (Kyle, 2026-10-10): a heading, one "Plan N · APR · months · $X/mo" line per plan, and the
     Synchrony link - Synchrony's own page carries the legal terms, so there is no table, no
-    deposit/fee note and no terms page here.
+    fee note and no terms page here. The one addition (Kyle, 2026-11-27: "when someone chooses
+    financing it needs to be clear they pay a deposit still") is a single deposit sentence under
+    the link, the same line the estimate email carries.
   */
-  const financingLines =
+  const financingInput =
     audience === "customer" && estimate.financing && !ranged
-      ? financingLinesFor({
+      ? {
           financing: estimate.financing,
           billedBeforeCoverage: jobBilled,
           coveredAmount: estimate.warranty ? estimate.warranty.coveredAmount : 0,
@@ -503,9 +506,12 @@ export async function renderEstimatePdf(
             estimate.signedAt && estimate.invoice && estimate.invoice.documents.length > 1
               ? estimate.invoice.billedTotal
               : null,
-        })
+        }
       : null;
-  if (financingLines) drawFinancingOptions(doc, financingLines, profile.financingUrl);
+  const financingLines = financingInput ? financingLinesFor(financingInput) : null;
+  if (financingLines && financingInput) {
+    drawFinancingOptions(doc, financingLines, profile.financingUrl, financingDepositLineFor(financingInput));
+  }
 
   // ── The company's working sheet ──
   if (audience === "company") {

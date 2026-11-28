@@ -12,7 +12,7 @@ import { useLocation } from "react-router-dom";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { CalendarPage } from "./CalendarPage";
-import { api } from "../lib/api";
+import { api, type AwaitingDepositJob } from "../lib/api";
 import type { CalendarAppointment, CalendarSchedule, Visit } from "../lib/types";
 
 function SearchProbe() {
@@ -48,7 +48,8 @@ const schedule: CalendarSchedule = {
   googleOnlyEvents: [],
 } as CalendarSchedule;
 
-function mockEverything() {
+function mockEverything(awaitingDeposit: AwaitingDepositJob[] = []) {
+  vi.spyOn(api, "awaitingDeposit").mockResolvedValue(awaitingDeposit);
   vi.spyOn(api, "calendarSchedule").mockResolvedValue(schedule);
   vi.spyOn(api, "calendarAvailability").mockResolvedValue({ available_slots: [], current_time_central: "", current_date_central: "" });
   vi.spyOn(api, "monthSchedule").mockResolvedValue({ year: 2026, month: 9, days: [] } as unknown as Awaited<ReturnType<typeof api.monthSchedule>>);
@@ -56,6 +57,27 @@ function mockEverything() {
 }
 
 describe("CalendarPage", () => {
+  it("the rail carries Signed — awaiting deposit with a Take payment button that opens the job drawer (Kyle, 2026-11-27)", async () => {
+    mockEverything([{
+      visitId: "visit-unpaid",
+      customerId: "acct-2",
+      customerName: "Pat Unpaid",
+      propertyId: "prop-2",
+      address: "5 Oak Ln, Smyrna, TN",
+      jobType: "Service upgrade",
+      purpose: null,
+      estimateNumber: "0000-TEST2",
+    }]);
+
+    renderWithProviders(<><CalendarPage /><SearchProbe /></>);
+
+    expect(await screen.findByRole("heading", { name: "Signed — awaiting deposit (1)" })).toBeInTheDocument();
+    expect(screen.getByText("Pat Unpaid")).toBeInTheDocument();
+    expect(screen.getByText("Deposit unpaid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Take payment" }));
+    expect(screen.getByTestId("search")).toHaveTextContent("job=visit-unpaid");
+  });
+
   it("renders one month grid and the needs-booking rail", async () => {
     mockEverything();
 

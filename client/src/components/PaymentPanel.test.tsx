@@ -19,6 +19,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { PaymentPanel, invoiceEmailRecord } from "./PaymentPanel";
@@ -64,6 +65,25 @@ async function openPanel(kindName?: RegExp | string) {
 }
 
 describe("PaymentPanel", () => {
+  it("recording the deposit refreshes the Jobs lists (incl. Signed — awaiting deposit) and the Calendar rail (Kyle, 2026-11-27)", async () => {
+    vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info({ depositPaid: 0, totalPaid: 0, balance: 349.86, depositSatisfied: false }));
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "recordPayment").mockResolvedValue({} as Awaited<ReturnType<typeof api.recordPayment>>);
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+    renderWithProviders(<PaymentPanel jobId="visit-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Record deposit (cash/check/Zelle)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Record" }));
+
+    // ["jobs"] is a prefix of ["jobs","awaiting-deposit"]; ["calendar"] of ["calendar", start, end].
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey?: unknown })?.queryKey));
+      expect(keys).toContain(JSON.stringify(["jobs"]));
+      expect(keys).toContain(JSON.stringify(["calendar"]));
+    });
+  });
+
   it("names the invoice and its balance on the whole-invoice send — never 'final bill', and the old separate email buttons are gone", async () => {
     vi.spyOn(api, "jobPaymentInfo").mockResolvedValue(info());
     vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);

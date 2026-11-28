@@ -38,6 +38,7 @@ import { priceSelection } from "../../shared/quoteMoney";
 import { pricingFiguresFromIssued } from "./issuedPricingFigures";
 import { buildQuoteFinancing, type QuoteFinancing } from "../../shared/financing";
 import {
+  FINANCING_DEPOSIT_STILL_DUE,
   FINANCING_SHEET_NOTE,
   breakdownRows,
   financingOffersFor,
@@ -784,6 +785,13 @@ export function renderEstimatePage(
                   <p style="font-size:15px;margin:0 0 8px;"><strong>Next step — your deposit:</strong>
                   $${opts.deposit.due.toFixed(2)} (one third of the total) reserves your spot on the
                   schedule. We can't book the work until it's in.</p>
+                  ${
+                    // Where financing is on offer on this estimate (the plans frozen at issue - the same
+                    // rule as the plan cards above) the deposit is still due now (Kyle, 2026-11-27).
+                    plansFromSnapshot(est.financingPlansJson)
+                      ? `<p style="font-size:14px;margin:0 0 10px;">${escapeHtml(FINANCING_DEPOSIT_STILL_DUE)}</p>`
+                      : ""
+                  }
                   <a href="${escapeHtml(opts.deposit.payUrl)}"
                      style="display:inline-block;background:#1a5c2e;color:#fff;text-decoration:none;
                             padding:12px 24px;border-radius:6px;font-size:16px;font-weight:600;">

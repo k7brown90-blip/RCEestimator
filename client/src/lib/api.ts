@@ -310,6 +310,18 @@ export interface CompanyBillRow {
   createdAt: string;
 }
 
+/** One row of "Signed — awaiting deposit" (GET /jobs/awaiting-deposit). `visitId` is the id the job drawer opens with. */
+export interface AwaitingDepositJob {
+  visitId: string;
+  customerId: string;
+  customerName: string;
+  propertyId: string;
+  address: string;
+  jobType: string | null;
+  purpose: string | null;
+  estimateNumber: string;
+}
+
 export interface NextStepJob {
   visitId: string;
   customerId: string;
@@ -1880,6 +1892,8 @@ export const api = {
     request<StockRequestView>(`/inventory/requests/${id}/decline`, { method: "POST", body: JSON.stringify({ reason }) }),
   // ─── The Needs-next-step queue (Phase 4) ───────────────────────────────────
   needsNextStep: () => request<NextStepJob[]>("/jobs/needs-next-step"),
+  // Signed, deposit not in (Kyle, 2026-11-27) - the Jobs page and the Calendar rail share this one list.
+  awaitingDeposit: () => request<AwaitingDepositJob[]>("/jobs/awaiting-deposit"),
   dispositionJob: (jobId: string, action: "archive" | "book-followup") =>
     request<{ done: true; followupVisitId: string | null }>(`/jobs/${jobId}/next-step`, {
       method: "POST",

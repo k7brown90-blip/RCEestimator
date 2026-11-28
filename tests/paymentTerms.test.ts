@@ -23,7 +23,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { prisma } from "../src/lib/prisma";
 import { chargeableAmount } from "../src/services/stripePayments";
-import { getActiveFinancingPlans } from "../src/services/financingSettings";
+import { getActiveFinancingPlans, snapshotActiveFinancingPlansJson } from "../src/services/financingSettings";
+import { FINANCING_DEPOSIT_STILL_DUE } from "../shared/financingDisplay";
 import { FINANCING_IN_PROGRESS, removeFinancingFee } from "../src/services/financingFee";
 import { REMINDER_PAUSED_FOR_FINANCING, sendInvoiceReminder, sweepInvoiceReminders } from "../src/services/invoiceReminders";
 import { BALANCE_DUE_TERMS, CONTRACT_PAYMENT_TERMS, FINAL_BILL_TERMS } from "../src/services/paymentTerms";
@@ -359,5 +360,30 @@ describe("reminders do not chase a customer whose balance is being paid through 
     emailMock.sendBrandedEmail.mockClear();
     expect(await sendInvoiceReminder(prisma, est.id)).toMatchObject({ ok: true, amount: 283.33 });
     expect(lastEmail().bodyHtml).toContain(FINAL_BILL_TERMS);
+  });
+});
+
+// ─── 3. The deposit is still due when financing is on offer (Kyle, 2026-11-27) ─────────────────
+
+describe("the deposit request says the deposit is still due where financing is on offer", () => {
+  it("carries the one financing sentence when the estimate's frozen plans offer financing, and not otherwise", async () => {
+    const withPlans = await issue("fd1");
+    const snapshot = await snapshotActiveFinancingPlansJson();
+    expect(snapshot).not.toBeNull(); // paired: the fixture really has plans on offer
+    await prisma.issuedEstimate.update({ where: { id: withPlans.id }, data: { financingPlansJson: snapshot } });
+
+    emailMock.sendBrandedEmail.mockClear();
+    expect(await sendDepositRequestEmail(prisma, withPlans.id, ORIGIN)).toMatchObject({ ok: true });
+    expect(FINANCING_DEPOSIT_STILL_DUE).toBe("Paying the balance with financing? This deposit is still due now. Financing covers the balance after it.");
+    expect(lastEmail().bodyHtml).toContain(FINANCING_DEPOSIT_STILL_DUE);
+    // The pay link and the balance terms are still there beside it.
+    expect(lastEmail().bodyHtml).toContain("Pay your deposit");
+    expect(lastEmail().bodyHtml).toContain(BALANCE_DUE_TERMS);
+
+    const noPlans = await issue("fd2");
+    emailMock.sendBrandedEmail.mockClear();
+    expect(await sendDepositRequestEmail(prisma, noPlans.id, ORIGIN)).toMatchObject({ ok: true });
+    expect(lastEmail().bodyHtml).not.toContain("Paying the balance with financing");
+    expect(lastEmail().bodyHtml).toContain("Pay your deposit"); // paired: the email itself was sent
   });
 });

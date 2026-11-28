@@ -57,6 +57,7 @@ import { renderEstimatePdf } from "./issuedEstimatePdf";
 import { loadPdfFinancing } from "./issuedEstimatePdfFinancing";
 import { getCompanyProfile } from "./companyProfile";
 import { buildQuoteFinancing } from "../../shared/financing";
+import { financingDepositLine } from "../../shared/financingDisplay";
 import { quotedRangeText } from "../../shared/quoteMoney";
 import { quotedRangesForIssued, type QuotedRangeRow } from "./quoteMoney";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
@@ -628,9 +629,15 @@ async function emailTotalText(
  * customer-safe view and figures are read, so no Synchrony rate can reach the email, and no
  * disclosure text is printed. Each plan line is exactly "Plan <planNumber> · $X/mo" (Kyle,
  * 2026-10-10, "With plan id"): no description, no APR, no months - those appear only on the PDF. No plan offering a payment (or nothing owed) = the button alone.
+ *
+ * ONE deposit sentence under the block (Kyle, 2026-11-27: "when someone chooses financing it needs
+ * to be clear they pay a deposit still"): "Financing covers the balance. The one-third deposit of $X
+ * is still paid up front, before we schedule." $X is the deposit on the SAME buildQuoteFinancing
+ * result; a price range (or no plan offering a payment) has no amount, so it is worded without one.
+ * It is a statement of the deposit, never a credit term.
  */
 async function financingBlockHtml(
-  est: { total: number; financingPlansJson: string | null; warrantyJson: string | null },
+  est: { total: number; financingPlansJson: string | null; warrantyJson: string | null; depositRequired: boolean; changeOrderForId: string | null },
   financingUrl: string,
   /**
    * An unsigned one-or-the-other estimate (Kyle, 2026-11-18, "Price range"): `est.total` adds every
@@ -657,6 +664,8 @@ async function financingBlockHtml(
         })
         .join("")
     : "";
+  // Decision 8 (financingFee.ts): there is no no-deposit financing, so a customer who finances pays the one-third deposit even where "Deposit required" is unticked (the office ticks it before the fee can go on). Only a change order, whose deposit belongs to its root, carries no sentence.
+  const depositLine = !est.changeOrderForId ? financingDepositLine(offers[0]?.deposit ?? null) : null;
   return `
     <p style="margin:24px 0;">
       <a href="${escapeHtml(financingUrl)}"
@@ -665,7 +674,8 @@ async function financingBlockHtml(
         Finance this project
       </a>
     </p>
-    ${lines ? `<p style="font-size:15px;font-weight:600;margin:16px 0 4px;">Monthly payments with financing</p>${lines}` : ""}`;
+    ${lines ? `<p style="font-size:15px;font-weight:600;margin:16px 0 4px;">Monthly payments with financing</p>${lines}` : ""}
+    ${depositLine ? `<p style="font-size:14px;margin:8px 0 16px;">${escapeHtml(depositLine)}</p>` : ""}`;
 }
 
 export type SendEstimateEmailOptions = {

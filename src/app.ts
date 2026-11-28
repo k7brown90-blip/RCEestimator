@@ -115,6 +115,7 @@ import { applyBilledRate, billedRateProblem, previewBilledRate } from "./service
 import { healthRecordTechRouter, healthRecordAdminRouter } from "./routes/health-record";
 import { billedTotalOf, chargeableAmount, createInvoiceCheckoutSession, depositDueOf, fullBillOf, handleStripeWebhook, parseWarrantyJson, paymentSummary, splitPaidByPayer, stripeConfigured, WARRANTY_EXPECTED_DAYS, warrantyCoverageOf, warrantyReceivableStatus } from "./services/stripePayments";
 import { activeFinancingFeesByRoot, feeDollarsOf } from "./services/financingFee";
+import { listAwaitingDeposit, signedDepositState } from "./services/awaitingDeposit";
 import { groupSignedRows, INVOICE_DOC_SELECT, isLiveSigned, LIVE_SIGNED, LIVE_SIGNED_CHANGE_ORDER, rollupInvoice, rootFirst, signedRootForJob, type InvoiceDocRow } from "./services/invoiceGroup";
 import { invoiceMoneyOf, loadInvoiceMoneyInputs } from "./services/invoiceMoney";
 import { LOSABLE_STATUSES } from "../shared/estimateStatus";
@@ -4336,11 +4337,14 @@ app.get("/crm/schedule/calendar", asyncHandler(async (req, res) => {
   const depositByVisit = new Map<string, boolean>();
   for (const v of railVisits) {
     if (v.status !== "contracted") continue;
-    // The ROOT invoice (2026-09-20) — its summary already rolls the change orders in.
-    const est = await signedRootForJob(prisma, v.id);
-    if (!est) { depositByVisit.set(v.id, false); continue; }
-    const summary = await paymentSummary(prisma, est.id, "https://unused.invalid");
-    depositByVisit.set(v.id, Boolean(summary?.depositSatisfied));
+    // ONE rule for "is this job's signed deposit in" (services/awaitingDeposit.ts, 2026-11-27) — the
+    // same helper behind GET /jobs/awaiting-deposit, so this rail and that list cannot disagree.
+    // A contracted job with NO live signed invoice behind it (a 220.87 study visit, a legacy
+    // acceptance) is not gated by the scheduling deposit rule (services/scheduling.ts: no signed
+    // estimate = gate open), so it reads as ready to schedule here - otherwise it would sit on no
+    // rail group at all and the office could not find it to book by hand.
+    const dep = await signedDepositState(prisma, v.id);
+    depositByVisit.set(v.id, !dep.hasSignedRoot || dep.depositSatisfied);
   }
   res.json({
     start: startStr,
@@ -4628,7 +4632,15 @@ app.get("/jobs", asyncHandler(async (req, res) => {
     ready to schedule and already scheduled organization." Consultation and estimate visits live
     on the account page and the calendar; until a signature AND the ⅓ deposit exist, nothing
     belongs on this tab. A signed estimate awaiting its deposit stays visible in the Estimates
-    tracker as "accepted" and graduates here when the deposit clears.
+    tracker as "sold" and graduates here when the deposit clears.
+    (Corrected 2026-11-27: the tracker's word is "sold" - EstimatesPage.tsx - not "accepted".)
+
+    ADDED 2026-11-27, Kyle: "she signed and hasn't paid so we need to see that and process a
+    payment for those who are financing." The Jobs LIST below is unchanged - still signed + deposit
+    paid, per the ruling above. The Jobs page ALSO carries a separate, labelled "Signed — awaiting
+    deposit" section (GET /jobs/awaiting-deposit, services/awaitingDeposit.ts, the AwaitingDeposit
+    component): not jobs, not schedulable, whose one action is Take payment. Do not widen this
+    filter to feed it.
 
     Qualification is by the JOB side of the estimate link (jobVisitId) — the same signed estimate
     also points at the consultation it was written from, and listing that origin visit here would
@@ -5581,6 +5593,17 @@ app.get("/jobs/needs-next-step", asyncHandler(async (_req, res) => {
     purpose: v.purpose,
     completedAt: v.completedAt,
   })));
+}));
+
+/**
+ * Signed - awaiting deposit (Kyle, 2026-11-27: "she signed and hasn't paid so we need to see
+ * that"). Contracted, unbooked jobs whose live signed root invoice needs a deposit that is not in;
+ * the test account excluded. Shown on the Jobs page and in the Calendar rail by one component; each
+ * row opens the job drawer (`visitId`) where the existing Take payment card records the deposit.
+ * No shared row cap - see services/awaitingDeposit.ts. Not the Jobs list (GET /jobs is unchanged).
+ */
+app.get("/jobs/awaiting-deposit", asyncHandler(async (_req, res) => {
+  res.json(await listAwaitingDeposit(prisma));
 }));
 
 /**

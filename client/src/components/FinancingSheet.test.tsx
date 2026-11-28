@@ -96,7 +96,9 @@ describe("FinancingLine", () => {
 
   it("says nothing is chosen or recorded, and shows the selection and its total", () => {
     open();
-    expect(screen.getByText(/Nothing is chosen or recorded here/)).toBeInTheDocument();
+    // Reworded 2026-11-27 (Kyle: "when someone chooses financing it needs to be clear they pay a deposit still"):
+    // the note now leads with the deposit; "nothing is chosen or recorded here" is still said, mid-sentence.
+    expect(screen.getByText(/nothing is chosen or recorded here/)).toBeInTheDocument();
     expect(screen.getByText(/Option A · total \$9000\.00/)).toBeInTheDocument();
   });
 
@@ -144,7 +146,8 @@ describe("FinancingLine - a home-warranty claim", () => {
     render(<FinancingLine financing={COVERED} selected={["A"]} label="Option A" total={9000} />);
     fireEvent.click(screen.getByRole("button", { name: /with financing/ }));
     expect(screen.getByText(/Option A · total \$9000\.00 · warranty covers \$3000\.00 · your share \$6000\.00/)).toBeInTheDocument();
-    expect(screen.getByText(/Estimated monthly payments on your share shown/)).toBeInTheDocument();
+    // Reworded 2026-11-27 (Kyle): "your share" instead of "the balance", and the deposit is still paid up front.
+    expect(screen.getByText("Financing covers your share after the one-third deposit. The deposit is still paid up front, before we schedule. Estimated monthly payments; nothing is chosen or recorded here.")).toBeInTheDocument();
     const c965 = screen.getByRole("region", { name: "Plan 965" });
     expect(within(c965).getByText("Deposit (one third, paid up front)").nextSibling?.textContent).toBe("$2000.00");
   });
@@ -152,6 +155,8 @@ describe("FinancingLine - a home-warranty claim", () => {
   it("without a claim the header is the plain total and the note is the original sentence", () => {
     open();
     expect(screen.queryByText(/warranty covers/)).toBeNull();
-    expect(screen.getByText(/Estimated monthly payments on the total shown/)).toBeInTheDocument();
+    // Reworded 2026-11-27 (Kyle): the old "payments on the total shown" was also wrong - they are worked on the balance after the deposit.
+    expect(screen.getByText("Financing covers the balance after the one-third deposit. The deposit is still paid up front, before we schedule. Estimated monthly payments; nothing is chosen or recorded here.")).toBeInTheDocument();
+    expect(screen.queryByText(/on the total shown/)).toBeNull();
   });
 });

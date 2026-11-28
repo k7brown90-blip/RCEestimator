@@ -41,6 +41,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { getCompanyProfile } from "./companyProfile";
+import { FINANCING_LINK_DEPOSIT_SENTENCE } from "../../shared/financingDisplay";
 import { logSystemEvent } from "./systemEvents";
 import { resolveRecipients } from "./emailCc";
 
@@ -58,6 +59,7 @@ export async function sendFinancingEmail(
     where: { id: estimateId },
     select: {
       number: true, title: true, customerName: true, customerEmail: true, status: true,
+      changeOrderForId: true,
       supersededBy: { select: { id: true } },
     },
   });
@@ -101,6 +103,7 @@ export async function sendFinancingEmail(
       <strong>${escapeHtml(est.title)}</strong>, Red Cedar Electric works with Synchrony.
       You're welcome to apply directly through their secure application — it only
       takes a few minutes, and there's no obligation.</p>
+      ${!est.changeOrderForId ? `<p style="font-size:15px;">${escapeHtml(FINANCING_LINK_DEPOSIT_SENTENCE)}</p>` : ""}
       ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${noteHtml(opts.message ?? "")}</p>` : ""}
       <p style="margin:24px 0;">
         <a href="${escapeHtml(financingUrl)}"

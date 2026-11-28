@@ -9,8 +9,11 @@
  *                plan id." ... "do not forget the apr %."
  *
  * So the section is: a heading, ONE line per active plan (Settings order), and the Synchrony link.
- * No table, no deposit/fee note, no "Financing terms" page - Synchrony's own page carries the legal
- * disclosure.
+ * No table, no fee note, no "Financing terms" page - Synchrony's own page carries the legal
+ * disclosure. The ONE exception, Kyle 2026-11-27 ("when someone chooses financing it needs to be
+ * clear they pay a deposit still"): under the link, the same single deposit sentence the estimate
+ * email carries (shared/financingDisplay.ts financingDepositLine) - the deposit amount and nothing
+ * about credit.
  *
  *   Reduced-APR plan:  "Plan 965 · 11.99% APR · 86 months · $109/mo"
  *   Deferred plan:     "Plan 920 · No interest if paid in full · 6 months · $1,036/mo"
@@ -31,6 +34,7 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { buildQuoteFinancing, type FinancingPlan } from "../../shared/financing";
+import { financingDepositLine } from "../../shared/financingDisplay";
 import { getActiveFinancingPlans, plansFromSnapshot } from "./financingSettings";
 import { getIssuedQuoteMoney } from "./quoteMoney";
 import { paymentSummary } from "./stripePayments";
@@ -41,6 +45,16 @@ type Doc = PDFKit.PDFDocument;
 export interface PdfFinancing {
   /** The active plans in force for this estimate (frozen snapshot, else Settings), in Settings order. */
   plans: FinancingPlan[];
+  /**
+   * What the deposit sentence under "Finance this project" may say (Kyle, 2026-11-27). Absent = an
+   * unsigned estimate (or a hand-built input): the calculator's own one-third of the printed total.
+   * On a signed invoice: `asked` is false only when a required deposit is already in - then there is
+   * no sentence. Decision 8 (financingFee.ts): there is no no-deposit financing, so a customer who finances pays the one-third deposit even where "Deposit required" is unticked (the office ticks it before the fee can go on). Only a change order, whose deposit belongs to its root, carries no sentence. `due` is the deposit the customer is actually asked for
+   * (paymentSummary.depositDue: a third of only the documents that require one), so the PDF never
+   * prints a second deposit figure; null when "Deposit required" is unticked, and the sentence is
+   * then worded without an amount.
+   */
+  deposit?: { asked: boolean; due: number | null };
 }
 
 /**
@@ -61,15 +75,22 @@ export async function loadPdfFinancing(prisma: PrismaClient, estimateId: string)
   // (getIssuedQuoteMoney) - never a quiet substitution of today's plans for the frozen ones.
   const plans = est.financingPlansJson ? (plansFromSnapshot(est.financingPlansJson) ?? []) : await getActiveFinancingPlans();
   if (plans.length === 0) return null;
+  let deposit: { asked: boolean; due: number | null } | undefined;
   if (est.signedAt) {
     // The origin only builds pay links, which are not read here.
     const summary = await paymentSummary(prisma, estimateId, "");
     if (summary && (summary.financingFee || summary.paidInFull)) return null;
+    // A signed invoice: the amount is the summary's deposit (a third of only the documents that
+    // require one). No sentence once a required deposit is in; unticked still says it, unpriced.
+    if (summary) {
+      const required = summary.depositRequired && summary.depositDue > 0;
+      deposit = { asked: !(required && summary.depositSatisfied), due: required ? summary.depositDue : null };
+    }
   }
   // Same guard as the customer page: an estimate the shared pricer cannot price offers nothing.
   const money = await getIssuedQuoteMoney(prisma, estimateId);
   if (!money) return null;
-  return { plans };
+  return { plans, deposit };
 }
 
 // ─── The lines: one per plan ────────────────────────────────────────────────────────────────────
@@ -92,6 +113,26 @@ const monthsOf = (n: number) => `${n} ${n === 1 ? "month" : "months"}`;
  * shared calculator. Null when nothing is offered (no active plan, or nothing owed: no "$0/mo").
  */
 export function financingLinesFor(input: FinancingLinesInput): string[] | null {
+  return financingFiguresFor(input)?.lines ?? null;
+}
+
+/**
+ * The one-line deposit sentence under "Finance this project" (Kyle, 2026-11-27) - worked from the
+ * SAME calculator result as the plan lines, so its amount is the deposit those figures assume.
+ * Null exactly when there are no plan lines.
+ */
+export function financingDepositLineFor(input: FinancingLinesInput): string | null {
+  const figures = financingFiguresFor(input);
+  if (!figures) return null;
+  // A required deposit already in: no sentence. On a signed invoice the amount is the deposit
+  // actually asked (or none when "Deposit required" is unticked), never a third of the PDF total.
+  const asked = input.financing.deposit;
+  if (!asked) return financingDepositLine(figures.deposit);
+  if (!asked.asked) return null;
+  return financingDepositLine(asked.due);
+}
+
+function financingFiguresFor(input: FinancingLinesInput): { lines: string[]; deposit: number } | null {
   const whole = input.wholeInvoiceTotal != null;
   const total = whole ? (input.wholeInvoiceTotal as number) : input.billedBeforeCoverage;
   const covered = whole ? 0 : input.coveredAmount;
@@ -105,7 +146,7 @@ export function financingLinesFor(input: FinancingLinesInput): string[] | null {
     const terms = p.type === "reduced_apr" ? `${p.apr}% APR` : "No interest if paid in full";
     lines.push(`Plan ${p.planNumber} · ${terms} · ${monthsOf(p.months)} · ${dollarsPerMonth(offer.monthly)}`);
   }
-  return lines.length > 0 ? lines : null;
+  return lines.length > 0 ? { lines, deposit: offers[0].deposit } : null;
 }
 
 // ─── Drawing ────────────────────────────────────────────────────────────────────────────────────
@@ -122,8 +163,8 @@ function ensureRoom(doc: Doc, needed: number): void {
  * Heading, a line per plan, and "Finance this project: <url>" with the URL printed in full (it has
  * to work on paper) and clickable. The heading, every line and the link travel together on a page.
  */
-export function drawFinancingOptions(doc: Doc, lines: readonly string[], financingUrl: string): void {
-  ensureRoom(doc, 40 + lines.length * 14 + 24);
+export function drawFinancingOptions(doc: Doc, lines: readonly string[], financingUrl: string, depositLine: string | null = null): void {
+  ensureRoom(doc, 40 + lines.length * 14 + 24 + (depositLine ? 16 : 0));
   doc.moveDown(1.2);
   doc.x = LEFT;
   doc.font("Helvetica-Bold").fontSize(12).fillColor("#000").text("Financing options (Synchrony)", LEFT, doc.y, { width: WIDTH });
@@ -134,5 +175,8 @@ export function drawFinancingOptions(doc: Doc, lines: readonly string[], financi
   doc.font("Helvetica-Bold").text("Finance this project: ", LEFT, doc.y, { width: WIDTH, continued: true });
   doc.font("Helvetica").fillColor("#1155cc").text(financingUrl, { link: financingUrl, underline: true });
   doc.fillColor("#000");
+  doc.x = LEFT;
+  // The deposit is still paid up front (Kyle, 2026-11-27): one sentence, under the link.
+  if (depositLine) doc.font("Helvetica").fontSize(10).text(depositLine, LEFT, doc.y + 2, { width: WIDTH });
   doc.x = LEFT;
 }

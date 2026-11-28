@@ -26,9 +26,14 @@ import type { IssuedEstimateWithLines } from "../src/services/issuedEstimateServ
 import { DEFAULT_FINANCING_PLANS } from "../src/services/financingPlanDefaults";
 import { buildQuoteFinancing, financingFigures, type FinancingPlan } from "../shared/financing";
 import {
+  FINANCING_DEPOSIT_STILL_DUE,
+  FINANCING_LINK_DEPOSIT_SENTENCE,
+  FINANCING_SHEET_NOTE,
   breakdownRows,
   cheapestSelection,
+  financingDepositLine,
   financingOffersFor,
+  financingSheetNote,
   fromLine,
   monthlyLabel,
   planTitle,
@@ -321,5 +326,67 @@ describe("/e/:token - home-warranty coverage", () => {
     expect(from(covered)).toBeLessThan(from(base));
     const homeowner = Math.round((PAGE_TOTAL - 600) * 100);
     expect(from(covered)).toBe(Math.min(...plans().map((p) => financingFigures(p, homeowner).monthly)));
+  });
+});
+
+// ─── the deposit is still paid (Kyle, 2026-11-27) ─────────────────────────────────────────────
+
+describe("the words that say the deposit is still paid where financing is offered", () => {
+  it("the plan-card note, word for word, and the warranty variant says 'your share'", () => {
+    expect(FINANCING_SHEET_NOTE).toBe(
+      "Financing covers the balance after the one-third deposit. The deposit is still paid up front, before we schedule. Estimated monthly payments; nothing is chosen or recorded here.",
+    );
+    expect(financingSheetNote({})).toBe(FINANCING_SHEET_NOTE);
+    expect(financingSheetNote({ yourShare: 6000 })).toBe(
+      "Financing covers your share after the one-third deposit. The deposit is still paid up front, before we schedule. Estimated monthly payments; nothing is chosen or recorded here.",
+    );
+    // The old sentence said payments were on "the total shown"; they are worked on the balance after the deposit.
+    expect(FINANCING_SHEET_NOTE).not.toMatch(/total shown/);
+  });
+
+  it("the customer's page prints the note over the plan cards", () => {
+    const html = renderEstimatePage(estimate());
+    expect(html).toContain(`<p class="finnote">${FINANCING_SHEET_NOTE}</p>`);
+  });
+
+  it("the estimate email / PDF line: the amount when there is one, the same sentence without it for a price range", () => {
+    expect(financingDepositLine(2000)).toBe("Financing covers the balance. The one-third deposit of $2000.00 is still paid up front, before we schedule.");
+    expect(financingDepositLine(null)).toBe("Financing covers the balance. The one-third deposit is still paid up front, before we schedule.");
+    expect(financingDepositLine(0)).toBe(financingDepositLine(null));
+  });
+
+  it("the financing-link email sentence, word for word", () => {
+    expect(FINANCING_LINK_DEPOSIT_SENTENCE).toBe(
+      "Financing covers the balance after the one-third deposit. The deposit is still paid to Red Cedar Electric up front, before we schedule the work.",
+    );
+  });
+});
+
+describe("/e/:token - a signed estimate's deposit box", () => {
+  const signed = (over: Partial<Record<string, unknown>> = {}) =>
+    estimate({ signedAt: new Date("2026-08-21T10:00:00Z"), signerName: "A M", selectedOptions: ["A", "C"], ...over });
+  const deposit = (over: Partial<NonNullable<NonNullable<Parameters<typeof renderEstimatePage>[1]>["deposit"]>> = {}) => ({
+    due: 272.18, required: true, satisfied: false, paidInFull: false, payUrl: "https://example.test/pay/tok?type=deposit", ...over,
+  });
+
+  it("says the deposit is still due when financing is on offer on the estimate, beside the Pay your deposit button", () => {
+    const html = renderEstimatePage(signed(), { deposit: deposit() });
+    expect(html).toContain("Pay your deposit — $272.18"); // paired: the box rendered
+    expect(html).toContain(FINANCING_DEPOSIT_STILL_DUE);
+    expect(html).not.toContain('id="finBlock"'); // a signed page still offers no plan cards
+  });
+
+  it("says nothing about financing where none is offered, once the deposit is in, or when none is required", () => {
+    const none = renderEstimatePage(signed({ financingPlansJson: null }), { deposit: deposit() });
+    expect(none).toContain("Pay your deposit — $272.18");
+    expect(none).not.toContain("Paying the balance with financing");
+
+    const paid = renderEstimatePage(signed(), { deposit: deposit({ satisfied: true }) });
+    expect(paid).toContain("Deposit received");
+    expect(paid).not.toContain("Paying the balance with financing");
+
+    const notRequired = renderEstimatePage(signed(), { deposit: deposit({ required: false }) });
+    expect(notRequired).toContain("no deposit is needed");
+    expect(notRequired).not.toContain("Paying the balance with financing");
   });
 });

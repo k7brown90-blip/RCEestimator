@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { AwaitingDeposit, useAwaitingDeposit } from "../components/AwaitingDeposit";
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
 import { api, type VisitMode } from "../lib/api";
 import { useDrawerParams } from "../lib/drawers";
@@ -75,6 +76,9 @@ export function JobsPage() {
     queryFn: () => api.jobs({ archived }),
   });
   const { data: properties = [] } = useQuery({ queryKey: ["properties"], queryFn: api.properties });
+  // The same query the Signed - awaiting deposit section mounts (one fetch): the empty state below
+  // points at that section only when it actually has rows.
+  const { data: awaitingDeposit } = useAwaitingDeposit();
 
   const createVisit = useMutation({
     mutationFn: api.createVisit,
@@ -239,6 +243,12 @@ export function JobsPage() {
           for the office to schedule what's next or call it done. */}
       {!archived && <NeedsNextStep />}
 
+      {/* Signed, deposit not in (Kyle, 2026-11-27: "she signed and hasn't paid so we need to see
+          that"). NOT jobs - the list below stays signed + deposit paid (Kyle, 2026-08-26) - so it
+          is its own labelled section whose one action is Take payment. Same component as the
+          Calendar rail's. */}
+      {!archived && <AwaitingDeposit />}
+
       {archived && (
         <div className="mb-5 flex flex-wrap items-center gap-3">
           <input
@@ -295,7 +305,9 @@ export function JobsPage() {
               ? search
                 ? "Nothing matches that search."
                 : "No completed or cancelled jobs."
-              : "No active jobs. A job appears here once its estimate is signed and the deposit is paid."}
+              : `No active jobs. A job appears here once its estimate is signed and the deposit is paid.${
+                (awaitingDeposit?.length ?? 0) > 0 ? " Signed jobs still waiting on a deposit are listed above." : ""
+              }`}
           </p>
         )}
       </section>

@@ -351,6 +351,10 @@ describe("the emails print the range", () => {
     expect(call.bodyHtml).toContain("Total $150.00 – $350.00 · choose one");
     expect(call.bodyHtml).not.toContain("450.00");
     expect(call.bodyHtml).not.toContain("/mo");
+    // Kyle, 2026-11-27: the Finance this project block still says the deposit is paid - WITHOUT an
+    // amount here, because no monthly figure (and so no deposit) is worked on a price range.
+    expect(call.bodyHtml).toContain("Financing covers the balance. The one-third deposit is still paid up front, before we schedule.");
+    expect(call.bodyHtml).not.toMatch(/one-third deposit of \$/);
   });
 
   it("Kyle's VIEWED alert shows the range in the body and the subject", async () => {

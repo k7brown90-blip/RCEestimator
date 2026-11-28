@@ -16,6 +16,8 @@ import { sendBrandedEmail, escapeHtml, noteHtml } from "./confirmationEmail";
 import { logSystemEvent } from "./systemEvents";
 import { paymentSummary, type PaymentSummary } from "./stripePayments";
 import { warrantyEmailLine } from "./warrantyNotice";
+import { plansFromSnapshot } from "./financingSettings";
+import { FINANCING_DEPOSIT_STILL_DUE } from "../../shared/financingDisplay";
 import { invoiceRootId } from "./invoiceGroup";
 import { BALANCE_DUE_TERMS } from "./paymentTerms";
 import { FINANCING_IN_PROGRESS, financingInProgress } from "./financingFee";
@@ -104,7 +106,7 @@ export async function sendDepositRequestEmail(
   estimateId = await invoiceRootId(prisma, estimateId);
   const est = await prisma.issuedEstimate.findUnique({
     where: { id: estimateId },
-    select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true },
+    select: { number: true, title: true, token: true, customerName: true, customerEmail: true, signedAt: true, financingPlansJson: true },
   });
   if (!est) return { ok: false, reason: "Estimate not found." };
   if (!est.signedAt) return { ok: false, reason: "This estimate has not been signed yet." };
@@ -147,6 +149,11 @@ export async function sendDepositRequestEmail(
       (invoice ${escapeHtml(est.number)}). To reserve your spot on the schedule, a deposit of
       <strong>$${due.toFixed(2)}</strong> — one third of the total — is due up front. We can't book
       the work until it's in.</p>
+      ${
+        // Where financing is on offer on this estimate (the same rule as the customer's signed page:
+        // plans frozen at issue) the deposit is still due - Kyle, 2026-11-27.
+        plansFromSnapshot(est.financingPlansJson) ? `<p style="font-size:14px;">${escapeHtml(FINANCING_DEPOSIT_STILL_DUE)}</p>` : ""
+      }
       ${(opts.message ?? "").trim() ? `<p style="font-size:15px;">${noteHtml(opts.message ?? "")}</p>` : ""}
       <p style="margin:24px 0;">
         <a href="${escapeHtml(payUrl)}"

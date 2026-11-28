@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
+import { AwaitingDeposit } from "../components/AwaitingDeposit";
 import { JobScheduler } from "../components/JobScheduler";
 import { PageHeader } from "../components/PageHeader";
 import { OpenDrawerButton } from "../components/drawers/OpenDrawerButton";
@@ -506,21 +507,12 @@ export function CalendarPage() {
             <p className="text-xs text-rce-muted">No sold jobs waiting.</p>
           )}
 
-          {(schedule?.unscheduled ?? []).some((j) => j.status === "contracted" && !j.depositSatisfied) && (
-            <>
-              <h3 className="pt-3 text-sm font-semibold">Signed — awaiting deposit</h3>
-              <p className="text-xs text-rce-muted">Sold, but the deposit gate is not open yet. Collect it, then schedule.</p>
-              {(schedule?.unscheduled ?? []).filter((j) => j.status === "contracted" && !j.depositSatisfied).map((job) => (
-                <div key={job.visitId} className="rounded-lg border border-amber-300/70 bg-rce-bg p-3">
-                  <Link to={`/accounts/${job.customerId}`} className="text-sm font-medium hover:text-rce-accent">
-                    {job.customerName}
-                  </Link>
-                  <p className="text-xs text-rce-muted">{job.address}</p>
-                  <p className="mt-1 text-xs text-amber-800">Deposit unpaid — Take payment lives on the account's invoice.</p>
-                </div>
-              ))}
-            </>
-          )}
+          {/* Signed, deposit not in: ONE component, shared with the Jobs page (Kyle, 2026-11-27: "she
+              signed and hasn't paid so we need to see that"). Its own list - no longer carved out of
+              this rail's 50 newest visits - and its row has the Take payment button. */}
+          <div className="pt-3">
+            <AwaitingDeposit />
+          </div>
 
           <h3 className="pt-3 text-sm font-semibold">Estimate visits to book</h3>
           <p className="text-xs text-rce-muted">Consultations from the lead pipe — not sold work.</p>

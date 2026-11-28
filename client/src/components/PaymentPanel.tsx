@@ -156,6 +156,8 @@ export function PaymentPanel({ jobId, estimateId, emailPanel = true, emailThread
       void queryClient.invalidateQueries({ queryKey });
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["schedule"] });
+      // The Calendar rail's ready-to-schedule list reads the deposit too (Kyle, 2026-11-27).
+      void queryClient.invalidateQueries({ queryKey: ["calendar"] });
     },
     onError: (err) => setError((err as Error).message),
   });
@@ -172,7 +174,10 @@ export function PaymentPanel({ jobId, estimateId, emailPanel = true, emailThread
     onSuccess: () => {
       setRecording(null); setAmount(""); setNote(""); setError(null);
       void queryClient.invalidateQueries({ queryKey });
+      // ["jobs"] also covers Signed - awaiting deposit (["jobs","awaiting-deposit"]); ["calendar"] moves a
+      // paid job from the Calendar rail's awaiting-deposit list to ready-to-schedule (Kyle, 2026-11-27).
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["calendar"] });
     },
     onError: (err) => setError((err as Error).message),
   });

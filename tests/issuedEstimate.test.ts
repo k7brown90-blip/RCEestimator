@@ -854,8 +854,48 @@ describe("the financing link in the estimate email", () => {
       }
       expect(html).not.toMatch(/discount rate/i);
       expect(html).not.toMatch(/IMPORTANT:/);
-      expect(html).not.toMatch(/\bdeposit\b/i);
+      // SUPERSEDED 2026-11-27 (Kyle: "when someone chooses financing it needs to be clear they pay a
+      // deposit still"): the old pin here was "no deposit word at all". The block now carries exactly
+      // ONE deposit sentence, its amount from the SAME buildQuoteFinancing result as the monthly
+      // figures - and still no deposit/fee table and no fee.
+      const depositSentence = `Financing covers the balance. The one-third deposit of $${built.bySelection.email.offers[0].deposit.toFixed(2)} is still paid up front, before we schedule.`;
+      expect(html).toContain(depositSentence);
+      expect(html.split(depositSentence).join("")).not.toMatch(/\bdeposit\b/i);
       expect(html).not.toMatch(/financing fee/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Kyle, 2026-11-27: "when someone chooses financing it needs to be clear they pay a deposit still."
+  // Decision 8: no no-deposit financing, so "Deposit required" unticked STILL carries the sentence
+  // (financing it means paying the deposit). A change order's deposit belongs to its root: no sentence.
+  it("keeps the deposit sentence when \"Deposit required\" is unticked, and leaves it off a change order", async () => {
+    const mod = await import("../src/services/confirmationEmail");
+    const spy = vi.spyOn(mod, "sendBrandedEmail").mockResolvedValue(true);
+    try {
+      const { sendEstimateEmail } = await import("../src/services/issuedEstimateSend");
+
+      const d1 = await quotableDraft("financing-nodeposit");
+      const g1 = await graduateDraft(prisma, { draftId: d1.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g1.ok).toBe(true);
+      if (!g1.ok) return;
+      await prisma.issuedEstimate.update({ where: { id: g1.estimateId }, data: { depositRequired: false } });
+      expect((await sendEstimateEmail(prisma, g1.estimateId, { sentBy: "human:test" })).ok).toBe(true);
+      const noDeposit = String(spy.mock.calls.at(-1)![0].bodyHtml);
+      expect(noDeposit).toContain("Finance this project");
+      expect(noDeposit).toMatch(/The one-third deposit of \$[\d,]+\.\d{2} is still paid up front, before we schedule\./);
+
+      const d2 = await quotableDraft("financing-changeorder");
+      const g2 = await graduateDraft(prisma, { draftId: d2.id, accountId: customerId, serviceAddressId: propertyId });
+      expect(g2.ok).toBe(true);
+      if (!g2.ok) return;
+      await prisma.issuedEstimate.update({ where: { id: g2.estimateId }, data: { changeOrderForId: g1.estimateId, depositRequired: true } });
+      expect((await sendEstimateEmail(prisma, g2.estimateId, { sentBy: "human:test" })).ok).toBe(true);
+      const co = String(spy.mock.calls.at(-1)![0].bodyHtml);
+      expect(co).toContain("Finance this project");
+      expect(co).not.toMatch(/\bdeposit\b/i);
+      await prisma.issuedEstimate.update({ where: { id: g2.estimateId }, data: { changeOrderForId: null } });
     } finally {
       spy.mockRestore();
     }

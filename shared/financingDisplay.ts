@@ -75,9 +75,40 @@ export function fromLine(sel: Pick<SelectionFinancing, "fromMonthly">): string {
   return `or from ${wholeDollars(sel.fromMonthly)}/mo with financing`;
 }
 
-/** The sentence at the top of the plan cards: it records nothing (decision 12 - the plan is chosen when the balance is paid). */
+/**
+ * The sentence at the top of the plan cards: it says the deposit is still paid, and that it records
+ * nothing (decision 12 - the plan is chosen when the balance is paid).
+ *
+ * Reworded 2026-11-27, Kyle: "when someone chooses financing it needs to be clear they pay a
+ * deposit still." The old text said payments were worked "on the total shown"; they are worked on
+ * the balance after the one-third deposit (shared/financing.ts).
+ */
 export const FINANCING_SHEET_NOTE =
-  "Estimated monthly payments on the total shown. Nothing is chosen or recorded here.";
+  "Financing covers the balance after the one-third deposit. The deposit is still paid up front, before we schedule. Estimated monthly payments; nothing is chosen or recorded here.";
+
+/** The warranty variant: identical, but a home-warranty claim reduced what the homeowner finances, so it is "your share". */
+export const FINANCING_SHEET_NOTE_WARRANTY =
+  "Financing covers your share after the one-third deposit. The deposit is still paid up front, before we schedule. Estimated monthly payments; nothing is chosen or recorded here.";
+
+/**
+ * The line the customer's email and PDF carry under "Finance this project" (Kyle, 2026-11-27). The
+ * amount is the one-third deposit from the SAME buildQuoteFinancing result the monthly figures come
+ * from; a price range with no offers has no amount, so the sentence is worded without one.
+ * No credit terms: nothing here is a rate, a term or an approval.
+ */
+export function financingDepositLine(deposit: number | null): string {
+  return deposit !== null && deposit > 0
+    ? `Financing covers the balance. The one-third deposit of ${dollarsAndCents(deposit)} is still paid up front, before we schedule.`
+    : "Financing covers the balance. The one-third deposit is still paid up front, before we schedule.";
+}
+
+/** The financing-link email's deposit sentence (Kyle, 2026-11-27). Same rule: no credit terms. */
+export const FINANCING_LINK_DEPOSIT_SENTENCE =
+  "Financing covers the balance after the one-third deposit. The deposit is still paid to Red Cedar Electric up front, before we schedule the work.";
+
+/** The signed page's deposit box and the deposit-request email, where financing is on offer (Kyle, 2026-11-27). */
+export const FINANCING_DEPOSIT_STILL_DUE =
+  "Paying the balance with financing? This deposit is still due now. Financing covers the balance after it.";
 
 /**
  * The sheet's header tail: the total the selection is shown at, and - when a home-warranty claim
@@ -95,11 +126,11 @@ export function sheetTotalLine(total: number | null, sel: Pick<SelectionFinancin
   return parts.length ? ` · ${parts.join(" · ")}` : "";
 }
 
-/** The sheet's opening sentence: on the share shown when a warranty claim reduced it, else on the total. */
+/** The sheet's opening sentence: covers the balance, or - when a warranty claim reduced what is financed - "your share". */
 export function financingSheetNote(sel: Pick<SelectionFinancing, "yourShare">): string {
   return sel.yourShare === undefined
     ? FINANCING_SHEET_NOTE
-    : "Estimated monthly payments on your share shown. Nothing is chosen or recorded here.";
+    : FINANCING_SHEET_NOTE_WARRANTY;
 }
 
 /** One selection's financing, or null when nothing is ticked, nothing is owed, or no plan is on offer. */

@@ -5,10 +5,11 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
+import { useLocation } from "react-router-dom";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { JobsPage } from "./JobsPage";
-import { api } from "../lib/api";
+import { api, type AwaitingDepositJob } from "../lib/api";
 import type { JobSummary } from "../lib/types";
 
 afterEach(() => {
@@ -39,8 +40,67 @@ const job: JobSummary = {
   } as JobSummary["costs"],
 };
 
+function LocationProbe() {
+  const { search } = useLocation();
+  return <p data-testid="search">{search}</p>;
+}
+
+const unpaid: AwaitingDepositJob = {
+  visitId: "visit-unpaid",
+  customerId: "cust-3",
+  customerName: "Pat Unpaid",
+  propertyId: "prop-3",
+  address: "7 Elm St, Smyrna, TN",
+  jobType: "Service upgrade",
+  purpose: null,
+  estimateNumber: "0000-TEST3",
+};
+
 describe("JobsPage", () => {
+  it("carries the labelled Signed — awaiting deposit section, whose Take payment opens the job drawer; the Jobs list itself is unchanged (Kyle, 2026-11-27)", async () => {
+    vi.spyOn(api, "jobs").mockResolvedValue([job]);
+    vi.spyOn(api, "properties").mockResolvedValue([]);
+    vi.spyOn(api, "needsNextStep").mockResolvedValue([]);
+    vi.spyOn(api, "awaitingDeposit").mockResolvedValue([unpaid]);
+
+    renderWithProviders(<><JobsPage /><LocationProbe /></>);
+
+    expect(await screen.findByRole("heading", { name: "Signed — awaiting deposit (1)" })).toBeInTheDocument();
+    expect(screen.getByText("Pat Unpaid")).toBeInTheDocument();
+    // Not a job card: the Jobs list holds only what was already on it.
+    expect(screen.getByText("12 Main St — Jane Homeowner")).toBeInTheDocument();
+    expect(screen.queryByText(/Pat Unpaid —/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Take payment" }));
+    expect(screen.getByTestId("search")).toHaveTextContent("job=visit-unpaid");
+  });
+
+  it("hides the section when nothing is waiting on a deposit", async () => {
+    vi.spyOn(api, "jobs").mockResolvedValue([job]);
+    vi.spyOn(api, "properties").mockResolvedValue([]);
+    vi.spyOn(api, "needsNextStep").mockResolvedValue([]);
+    const spy = vi.spyOn(api, "awaitingDeposit").mockResolvedValue([]);
+
+    renderWithProviders(<JobsPage />);
+
+    await screen.findByText("12 Main St — Jane Homeowner");
+    await vi.waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(screen.queryByText(/Signed — awaiting deposit/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Take payment" })).not.toBeInTheDocument();
+  });
+
+  it("the empty state points at the awaiting-deposit section only when it has rows", async () => {
+    vi.spyOn(api, "jobs").mockResolvedValue([]);
+    vi.spyOn(api, "properties").mockResolvedValue([]);
+    vi.spyOn(api, "needsNextStep").mockResolvedValue([]);
+    vi.spyOn(api, "awaitingDeposit").mockResolvedValue([unpaid]);
+
+    renderWithProviders(<JobsPage />);
+
+    expect(await screen.findByText("No active jobs. A job appears here once its estimate is signed and the deposit is paid. Signed jobs still waiting on a deposit are listed above.")).toBeInTheDocument();
+  });
+
   it("renders the active jobs list and the needs-next-step queue", async () => {
+    vi.spyOn(api, "awaitingDeposit").mockResolvedValue([]);
     vi.spyOn(api, "jobs").mockResolvedValue([job]);
     vi.spyOn(api, "properties").mockResolvedValue([]);
     vi.spyOn(api, "needsNextStep").mockResolvedValue([
@@ -66,6 +126,7 @@ describe("JobsPage", () => {
   });
 
   it("shows the empty state when there are no active jobs", async () => {
+    vi.spyOn(api, "awaitingDeposit").mockResolvedValue([]);
     vi.spyOn(api, "jobs").mockResolvedValue([]);
     vi.spyOn(api, "properties").mockResolvedValue([]);
     vi.spyOn(api, "needsNextStep").mockResolvedValue([]);
@@ -73,5 +134,7 @@ describe("JobsPage", () => {
     renderWithProviders(<JobsPage />);
 
     expect(await screen.findByText(/No active jobs/)).toBeInTheDocument();
+    // Nothing is waiting on a deposit, so the empty state does not point at a section that is not there.
+    expect(screen.queryByText(/still waiting on a deposit/)).not.toBeInTheDocument();
   });
 });
