@@ -2045,8 +2045,8 @@ export interface PbReview {
   optionSet: DraftOptionSet;
   proposedLines: PbLine[];
   confirmedLines: PbLine[];
-  openQuestions: PbQuestion[];
-  counts: { proposed: number; confirmed: number; openQuestions: number };
+  // No `openQuestions` (Kyle, 2026-11-28): the AI no longer asks questions and nothing blocks on one.
+  counts: { proposed: number; confirmed: number };
 }
 
 export interface PbLineGap {

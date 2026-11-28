@@ -89,7 +89,7 @@ function serverQuote(): QuoteState {
       issued: { estimateId: EST, number: '2026-1098', revision: 1, status: 'signed', signedAt: '2026-10-10T15:00:00.000Z', issuedAt: ISSUED_AT, validDays: 30, figuresKey: KEY, archived: false, customerUrl: null },
       hasUnsavedChanges: false, reviseReason: 'signed', deleteReason: null, copyReason: null,
     },
-    suggestedLines: [], openQuestions: [], isChangeOrder: false, changeOrderFor: null, lines: [],
+    suggestedLines: [], isChangeOrder: false, changeOrderFor: null, lines: [],
     optionSet: { options: [], nextOption: 'B', lockedReason: 'signed' },
     options: [],
     money: { exclusiveOptions: false, range: null, discount: null, discountedTotal: null, discountedRange: null, pickable: [], selections: {}, financing: null },

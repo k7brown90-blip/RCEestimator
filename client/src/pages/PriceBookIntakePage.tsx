@@ -15,6 +15,7 @@ import { FinancingLine } from "../components/FinancingSheet";
 import { cheapestSelection } from "../../../shared/financingDisplay";
 import { picksOne, quotedRangeText, selectionPrice, type QuoteMoney } from "../../../shared/quoteMoney";
 import { acceptanceWording, isOfficeAcceptance } from "../../../shared/acceptance";
+import { notPlacedNote, type NotPlacedScope } from "../../../shared/suggestedLines";
 import {
   BASE_OPTIONS,
   OPTION_HINTS,
@@ -482,7 +483,6 @@ export function PriceBookIntakePage() {
             computed={computed?.computed}
             quoteMoney={computed?.money}
             options={computed?.options}
-            openQuestions={review?.counts.openQuestions ?? 0}
             openItems={openItems}
             draftId={draftId}
           />
@@ -771,8 +771,8 @@ function BrowseTab(props: {
           {searching && <p className="text-sm text-rce-muted">Searching…</p>}
           {!searching && atomics.length === 0 && (
             <p className="text-sm text-rce-muted">
-              Nothing matched. If the item exists on the job but not in the book, add it as a
-              question on the Walkthrough tab so it is not lost.
+              Nothing matched. If the item exists on the job but not in the book, add it to your
+              price book first, then add it from here.
             </p>
           )}
           {atomics.map((a) => (
@@ -1012,7 +1012,7 @@ function WalkthroughTab(props: {
 
   const [lastPath, setLastPath] = useState<"ai" | "basic" | null>(null);
   const [degraded, setDegraded] = useState<string | null>(null);
-  const [aiSummary, setAiSummary] = useState<{ proposed: number; questions: number; rejected: number } | null>(null);
+  const [aiSummary, setAiSummary] = useState<{ proposed: number; notPlaced: NotPlacedScope[]; rejected: number } | null>(null);
 
   /** The primary path: the model composes the draft, proposeLines() enforces the contract. */
   const propose = useMutation({
@@ -1024,12 +1024,13 @@ function WalkthroughTab(props: {
         setRows(null);
         setAiSummary({
           proposed: r.proposed.length,
-          questions: r.questions.length,
+          notPlaced: r.notPlaced,
           rejected: r.rejected.length,
         });
-        // Proposed lines and questions now exist on the draft — the review tab and the totals
-        // bar both need to see them.
-        onOpenItemsChange(r.questions.length);
+        // Proposed lines now exist on the draft — the review tab and the totals bar both need to
+        // see them. What the model could not place is a note, not an open item: nothing is left
+        // for anyone to answer, so the totals bar's open-items count goes to zero (Kyle, 2026-11-28).
+        onOpenItemsChange(0);
         onChanged();
       } else {
         // Degraded: fall through to the token matcher so the tech still gets candidates.
@@ -1117,9 +1118,13 @@ function WalkthroughTab(props: {
       {aiSummary && (
         <div className="card p-3 text-sm">
           <p className="font-medium">
-            {aiSummary.proposed} line(s) proposed · {aiSummary.questions} question(s)
+            {aiSummary.proposed} line(s) proposed
             {aiSummary.rejected > 0 ? ` · ${aiSummary.rejected} refused` : ""}
           </p>
+          {/* A note to read, nothing to answer and nothing waits on it (Kyle, 2026-11-28). */}
+          {notPlacedNote(aiSummary.notPlaced) && (
+            <p className="mt-1 text-xs text-amber-900">{notPlacedNote(aiSummary.notPlaced)}</p>
+          )}
           <p className="mt-1 text-xs text-rce-muted">
             Open the Review tab to accept, edit or drop each one. Nothing counts until you confirm it.
           </p>
@@ -1262,7 +1267,7 @@ function ReviewTab(props: {
   accountId: string | null;
   serviceAddressId: string | null;
   onAttached: (accountId: string, serviceAddressId: string) => void;
-  review: { optionSet: DraftOptionSet; proposedLines: PbLine[]; confirmedLines: PbLine[]; openQuestions: Array<{ id: string; question: string; raisedBy: string }>; counts: { proposed: number; confirmed: number; openQuestions: number } } | undefined;
+  review: { optionSet: DraftOptionSet; proposedLines: PbLine[]; confirmedLines: PbLine[]; counts: { proposed: number; confirmed: number } } | undefined;
   computed: PbComputed | undefined;
   options: PbOptionSummary[] | undefined;
   /**
@@ -1341,15 +1346,6 @@ function ReviewTab(props: {
           </h3>
           {review.proposedLines.map((l) => (
             <ProposedLineRow key={l.id} line={l} isChangeOrder={Boolean(props.isChangeOrder)} onChanged={onChanged} />
-          ))}
-        </div>
-      )}
-
-      {review.openQuestions.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-semibold">Open questions — {review.counts.openQuestions}</h3>
-          {review.openQuestions.map((q) => (
-            <QuestionRow key={q.id} question={q} onChanged={onChanged} />
           ))}
         </div>
       )}
@@ -2038,27 +2034,6 @@ function ProposedLineRow(props: { line: PbLine; isChangeOrder: boolean; onChange
   );
 }
 
-function QuestionRow(props: { question: { id: string; question: string; raisedBy: string }; onChanged: () => void }) {
-  const { question, onChanged } = props;
-  const [note, setNote] = useState("");
-  const resolve = useMutation({
-    mutationFn: () => api.pbResolveQuestion(question.id, note.trim()),
-    onSuccess: onChanged,
-  });
-  return (
-    <div className="card border-l-4 border-amber-400 p-3">
-      <p className="text-sm">{question.question}</p>
-      <p className="text-xs text-rce-soft">raised by {question.raisedBy}</p>
-      <div className="mt-2 flex gap-2">
-        <input className="field flex-1" placeholder="Answer / what you did" value={note} onChange={(e) => setNote(e.target.value)} />
-        <button className="btn btn-secondary" disabled={!note.trim() || resolve.isPending} onClick={() => resolve.mutate()}>
-          Resolve
-        </button>
-      </div>
-    </div>
-  );
-}
-
 
 /**
  * One line naming what a draft belongs to, or null when it belongs to nothing.
@@ -2182,17 +2157,16 @@ function attachmentLabel(d: PbDraft | undefined): string | null {
 /**
  * The status line may not claim more than the draft has earned (P022 / P019 §3).
  *
- * The engine now refuses to call an empty draft COMPLETE, but the engine cannot see the two
- * other kinds of open work: questions raised against the draft, and walkthrough rows the matcher
- * left UNMATCHED or AMBIGUOUS. Those live on this page. So the bar takes them as props and
- * reports the strictest true statement, rather than the engine's line alone.
+ * The engine now refuses to call an empty draft COMPLETE, but the engine cannot see the other
+ * kind of open work: walkthrough rows the matcher left UNMATCHED or AMBIGUOUS. Those live on this
+ * page. So the bar takes them as a prop and reports the strictest true statement, rather than the
+ * engine's line alone. (Open questions are no longer counted - Kyle, 2026-11-28.)
  */
 function TotalsBar(props: {
   computed: PbComputed | undefined;
   /** The server's finished prices and financing figures (shared/quoteMoney.ts). Optional: older payloads lack it. */
   quoteMoney?: QuoteMoney;
   options?: PbOptionSummary[];
-  openQuestions: number;
   openItems: number;
   draftId?: string | null;
 }) {
@@ -2229,12 +2203,11 @@ function TotalsBar(props: {
   const c = props.computed;
   if (!c) return null;
 
-  const open = props.openQuestions + props.openItems;
+  const open = props.openItems;
   const earnedComplete = c.totalLineCount > 0 && c.incompleteLineCount === 0 && open === 0;
 
   const openBits: string[] = [];
   if (props.openItems > 0) openBits.push(`${props.openItems} item(s) unresolved`);
-  if (props.openQuestions > 0) openBits.push(`${props.openQuestions} question(s) open`);
 
   const status = earnedComplete
     ? "COMPLETE"

@@ -168,7 +168,7 @@ async function nextNumber(prisma: PrismaClient): Promise<string> {
  * Turn a finalized, gap-free draft into an issued estimate.
  *
  * The gate is `finalizeDraft` itself rather than a second implementation of the same rules — it
- * already refuses on unconfirmed AI proposals, open questions, missing labour, missing supplier
+ * already refuses on unconfirmed AI proposals, missing labour, missing supplier
  * price, a raceway with no measured conductor line, and a provisional rate. Re-deriving that
  * list here would create a second answer to "is this quotable?" that could drift from the first.
  * Its refusal reasons are returned VERBATIM, because the wording is what tells Kyle what to fix.

@@ -88,21 +88,17 @@ describe('rejectSuggestedLine', () => {
   })
 })
 
-describe('resolveQuoteQuestion', () => {
-  it('POSTs the answer to the question', async () => {
-    const f = mockFetchOk({})
-    await crmSync.resolveQuoteQuestion('q1', 'A 20A outdoor GFCI.')
-    expect(lastCall(f)).toEqual({
-      url: 'https://rce.example.com/api/health-record/quote-questions/q1/resolve',
-      method: 'POST',
-      body: { resolutionNote: 'A 20A outdoor GFCI.' },
-    })
+// Kyle, 2026-11-28: the phone no longer has a "Resolve" for open questions ("I already confirmed the line
+// item once"), so the call that sent it is gone with it. The server route stays for old rows.
+describe('open questions are gone from the phone', () => {
+  it('there is no resolveQuoteQuestion call any more', () => {
+    expect((crmSync as Record<string, unknown>).resolveQuoteQuestion).toBeUndefined()
   })
 })
 
 describe('proposeFromWalkthroughList ("Build the draft (AI)")', () => {
   it('POSTs the typed list to the quote and returns which brain answered', async () => {
-    const f = mockFetchOk({ path: 'basic', degradedReason: 'The AI helper is unavailable right now.', proposed: [], questions: [], rejected: [] })
+    const f = mockFetchOk({ path: 'basic', degradedReason: 'The AI helper is unavailable right now.', proposed: [], notPlaced: [], rejected: [] })
     const r = await crmSync.proposeFromWalkthroughList('draft-1', '4 20A receptacle\n50 ft EMT')
     expect(lastCall(f)).toEqual({
       url: 'https://rce.example.com/api/health-record/quotes/draft-1/walkthrough/propose',

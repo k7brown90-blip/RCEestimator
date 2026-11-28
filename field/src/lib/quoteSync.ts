@@ -1528,7 +1528,6 @@ export function emptyQuoteState(draftId: string, title?: string): QuoteState {
     jobDescription: null,
     lifecycle: { status: 'draft', issued: null, hasUnsavedChanges: false, reviseReason: null, deleteReason: null, copyReason: null },
     suggestedLines: [],
-    openQuestions: [],
     isChangeOrder: false,
     changeOrderFor: null,
     lines: [],

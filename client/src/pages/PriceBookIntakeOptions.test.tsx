@@ -93,8 +93,7 @@ function reviewWith(optionSet: DraftOptionSet, opts: { confirmed?: ReturnType<ty
     optionSet,
     proposedLines: (opts.proposed ?? []) as never,
     confirmedLines: confirmed as never,
-    openQuestions: [],
-    counts: { proposed: (opts.proposed ?? []).length, confirmed: confirmed.length, openQuestions: 0 },
+    counts: { proposed: (opts.proposed ?? []).length, confirmed: confirmed.length },
   };
 }
 

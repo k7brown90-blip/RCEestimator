@@ -136,7 +136,7 @@ export function customerOptions(quote: QuoteState): CustomerOption[] {
 export function showCustomerReason(quote: QuoteState | null): string | null {
   if (!quote) return 'The quote is still loading.'
   if (quote.lines.length === 0) return 'Add some work to the quote first — there is nothing to show the customer yet.'
-  if (quote.money.pickable.length === 0) return 'The work is still waiting on you (AI proposals or open questions) — confirm it, then it can be shown.'
+  if (quote.money.pickable.length === 0) return 'The work is still waiting on you (AI proposals) — confirm it, then it can be shown.'
   if (Object.keys(quote.money.selections).length === 0) return 'Nothing is priced yet — every option has a line with no price, so there is no number to show.'
   return null
 }
@@ -149,7 +149,7 @@ export function showCustomerReason(quote: QuoteState | null): string | null {
 export function previewShowReason(quote: QuoteState | null, preview: Pick<CustomerPreview, 'reason'>): string | null {
   if (!quote) return 'The quote is still loading.'
   if (quote.lines.length === 0) return 'Add some work to the quote first — there is nothing to show the customer yet.'
-  if (quote.money.pickable.length === 0) return 'The work is still waiting on you (AI proposals or open questions) — confirm it, then it can be shown.'
+  if (quote.money.pickable.length === 0) return 'The work is still waiting on you (AI proposals) — confirm it, then it can be shown.'
   if (Object.keys(quote.money.selections).length === 0) return previewNothingToShowReason(preview.reason)
   return null
 }
@@ -167,7 +167,7 @@ export interface SignHandoff {
 export function signNowGreyedReason(args: {
   decision: PresentDecision
   ticked: readonly string[]
-  /** The reason a first/revised issue would be refused (AI proposals, open questions), or null. */
+  /** The reason a first/revised issue would be refused (AI proposals waiting), or null. */
   issueBlockedReason: string | null
   canSign: boolean
 }): string | null {
@@ -229,7 +229,7 @@ export function ShowCustomerScreen(props: {
    * screen to open: "Sign now" is then greyed WITH that reason, never hidden.
    */
   onSignInPerson?: (handoff: SignHandoff) => void
-  /** The reason issuing would be refused (AI proposals or open questions waiting), or null. */
+  /** The reason issuing would be refused (AI proposals waiting), or null. */
   issueBlockedReason: string | null
   onBack: () => void
   /** What starts ticked, for a render that is not the first look (tests). Defaults to the shared rule. */

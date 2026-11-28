@@ -51,11 +51,12 @@
  *   (quote.money) or, with no signal, from the shared preview over the saved sheet; nothing on this
  *   screen does money arithmetic.
  *
- * AI PROPOSALS, OPEN QUESTIONS, WALK THE JOB (Phase 2 unit D, 2026-10-08): "Walk the job — list what you
+ * AI PROPOSALS, WALK THE JOB (Phase 2 unit D, 2026-10-08): "Walk the job — list what you
  * need" is the office's Walkthrough tab ("Build the draft (AI)" / "Basic match only"); what the AI
- * suggests lands under "AI proposals" (Confirm / Edit & confirm / Reject) and what it could not place
- * under "Open questions" (Resolve) — QuoteSuggestions.tsx. The quote cannot be issued while either
- * list has anything in it, and the Issue button says so BEFORE the press.
+ * suggests lands under "AI proposals" (Confirm / Edit & confirm / Reject) — QuoteSuggestions.tsx. What
+ * it could not place is a "Couldn't place: ..." note under the result, never a question (Kyle,
+ * 2026-11-28). The quote cannot be issued while "AI proposals" has anything in it, and the Issue button
+ * says so BEFORE the press.
  *
  * PHOTOS, THE ISSUE CHECKBOXES, CHANGE ORDERS (Phase 2 unit E, 2026-10-08): "Photos for the estimate"
  * (QuotePhotos.tsx) is the office's photo picker narrowed to THIS JOB (Kyle, 2026-10-09, ruling 2:
@@ -97,7 +98,6 @@ import {
   proposeFromWalkthroughList,
   raiseChangeOrder,
   rejectSuggestedLine,
-  resolveQuoteQuestion,
   uploadJobPhoto,
   type QuoteLine,
 } from '../../lib/crmSync'
@@ -150,7 +150,7 @@ import { QuoteOptionBoard } from './QuoteOptionBoard'
 import { QuoteCatalogPicker } from './QuoteCatalogPicker'
 import { AddingIntoBar, OptionModeAndCopy, QuoteTotals } from './QuoteSettings'
 import { IssuedEstimatePanel, QuoteExits, TitleScopeEditor, issueButtonState } from './QuoteLifecycle'
-import { OpenQuestionsPanel, SuggestedLinesPanel, WalkthroughList } from './QuoteSuggestions'
+import { SuggestedLinesPanel, WalkthroughList } from './QuoteSuggestions'
 import { QuotePhotos } from './QuotePhotos'
 import {
   CHECK_PRICES_FIRST,
@@ -539,10 +539,9 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
   const issued = lifecycle?.issued ?? null
   const showIssuedPanel = Boolean(quote && issued && !lifecycle?.hasUnsavedChanges && !editing)
   const issueButton = issueButtonState(lifecycle)
-  // Suggested lines and open questions BLOCK ISSUE (finalizeDraft refuses them): the button is greyed
-  // WITH the reason, in the same words the server's refusal uses (shared/suggestedLines.ts).
+  // Suggested lines BLOCK ISSUE (finalizeDraft refuses them): the button is greyed WITH the reason, in
+  // the same words the server's refusal uses (shared/suggestedLines.ts). Open questions never block.
   const suggestedLines = quote?.suggestedLines ?? []
-  const openQuestions = quote?.openQuestions ?? []
 
   // The signature this phone holds for the issued estimate (U8): queued (not recorded yet), refused
   // by the office, or recorded. Re-read as the signature queue settles in the background.
@@ -591,7 +590,7 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
         ? (waitingCount > 0 ? sendingIssueReason(waitingCount) : waitForChangesReason(0))
         : pricesNeedReview
           ? CHECK_PRICES_FIRST
-          : issueDisabledReason(issueButton.disabledReason, suggestedLines.length, openQuestions.length)
+          : issueDisabledReason(issueButton.disabledReason, suggestedLines.length)
   const aiReason = lockedReason ?? (offline ? OFFLINE_AI_REASON : null)
   const copyLinesReason = liveCallReason(OFFLINE_COPY_LINES_REASON)
   const copyNewReason = lifecycle?.copyReason ?? liveCallReason(OFFLINE_COPY_NEW_REASON)
@@ -1014,7 +1013,7 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
           await refresh(draftId!)
           return r
         }}
-        issueBlockedReason={issueDisabledReason(null, suggestedLines.length, openQuestions.length)}
+        issueBlockedReason={issueDisabledReason(null, suggestedLines.length)}
         // Phase 3 unit C: always available - the signing screen lives on this phone.
         onSignInPerson={(h) => setSigning(h)}
         onBack={() => setShowing(false)}
@@ -1130,7 +1129,7 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
         </p>
       )}
 
-      {/* What the AI suggested, and what it could not place: decided here, in the office's words. Online only (design §2). */}
+      {/* What the AI suggested: decided here, in the office's words. Online only (design §2). */}
       {quote && (
         <SuggestedLinesPanel
           lines={suggestedLines}
@@ -1139,14 +1138,6 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
           allowNegative={quote.isChangeOrder}
           onConfirm={async (lineId, edits) => { await actThrowing(() => confirmSuggestedLine(lineId, edits)) }}
           onReject={async (lineId) => { await actThrowing(() => rejectSuggestedLine(lineId)) }}
-        />
-      )}
-      {quote && (
-        <OpenQuestionsPanel
-          questions={openQuestions}
-          busy={busy}
-          lockedReason={aiReason}
-          onResolve={async (questionId, note) => { await actThrowing(() => resolveQuoteQuestion(questionId, note)) }}
         />
       )}
 

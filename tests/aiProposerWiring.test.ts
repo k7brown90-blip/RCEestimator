@@ -74,7 +74,10 @@ describe("the degraded path is honest", () => {
 });
 
 describe("a hallucinated itemId cannot become a line", () => {
-  it("becomes a question, through the same gate the MCP tool uses", async () => {
+  // Kyle, 2026-11-28: "I dont want these questions as I already confirmed the line item once." This
+  // test used to pin that the invented id became a QUESTION row on the draft. It now pins that it is
+  // reported as NOT PLACED - a note in the result - and that no question row is written at all.
+  it("is reported as not placed (no question row), through the same gate the MCP tool uses", async () => {
     // This is the guarantee the wire depends on: the proposer hands its output to proposeLines(),
     // which resolves every itemId against the live catalog before anything is written.
     const result = await proposeLines(
@@ -90,11 +93,62 @@ describe("a hallucinated itemId cannot become a line", () => {
 
     expect(result.proposed.map((p) => p.itemId)).toEqual([REAL_ITEM]);
     expect(result.rejected.map((r) => r.itemId)).toEqual(["TOTALLY-MADE-UP-001"]);
-    expect(result.questions.some((q) => q.question.includes("TOTALLY-MADE-UP-001"))).toBe(true);
+    expect(result.notPlaced).toHaveLength(1);
+    expect(result.notPlaced[0]!.text).toBe("invented by a model");
+    expect(result.notPlaced[0]!.reason).toContain("TOTALLY-MADE-UP-001");
+    expect(await prisma.priceBookDraftQuestion.count({ where: { draftId } }), "no question row").toBe(0);
 
     const lines = await prisma.priceBookDraftLine.findMany({ where: { draftId } });
     expect(lines.every((l) => l.state === "PROPOSED"), "the model cannot confirm").toBe(true);
     expect(lines.map((l) => l.itemId)).not.toContain("TOTALLY-MADE-UP-001");
+  });
+});
+
+describe("scope the model cannot place is a note, never a question (Kyle, 2026-11-28)", () => {
+  it("the model's own notPlaced list comes back as notPlaced and writes nothing", async () => {
+    const before = await prisma.priceBookDraftLine.count({ where: { draftId } });
+    const result = await proposeLines(
+      prisma,
+      draftId,
+      [],
+      [
+        { text: "that weird outdoor plug by the pool", reason: "nothing in the price book fits" },
+        { text: "   ", reason: "blank text is dropped" },
+      ],
+      "ai:test",
+    );
+    expect(result.notPlaced).toEqual([{ text: "that weird outdoor plug by the pool", reason: "nothing in the price book fits" }]);
+    expect(result.proposed).toEqual([]);
+    expect(await prisma.priceBookDraftQuestion.count({ where: { draftId } }), "no question row").toBe(0);
+    expect(await prisma.priceBookDraftLine.count({ where: { draftId } })).toBe(before);
+  });
+
+  it("a rejected line (non-positive quantity) is still on the rejected list, and an unknown id is on both lists", async () => {
+    const result = await proposeLines(
+      prisma,
+      draftId,
+      [
+        { itemId: REAL_ITEM, quantity: 0, reasoning: "zero is nothing" },
+        { itemId: "NOT-A-REAL-CODE", quantity: 1, reasoning: "invented" },
+      ],
+      [],
+      "ai:test",
+    );
+    expect(result.rejected.map((r) => r.itemId).sort()).toEqual([REAL_ITEM, "NOT-A-REAL-CODE"].sort());
+    expect(result.notPlaced.map((n) => n.text)).toEqual(["invented"]);
+  });
+
+  it("the instructions and the output schema no longer ask for questions", () => {
+    const proposer = SRC("src/services/aiProposer.ts");
+    const schema = proposer.slice(proposer.indexOf("const SCHEMA"), proposer.indexOf("interface ModelLine"));
+    expect(schema).toContain('required: ["lines", "notPlaced"]');
+    expect(schema).not.toMatch(/questions/);
+    expect(schema).toContain("notPlaced");
+    const instructions = proposer.slice(proposer.indexOf("const INSTRUCTIONS"), proposer.indexOf("const SCHEMA"));
+    expect(instructions).toContain("do NOT ask a question");
+    expect(instructions).not.toContain("becomes a question");
+    // The model still never guesses an itemId (P011).
+    expect(instructions).toContain("Never invent an itemId");
   });
 });
 

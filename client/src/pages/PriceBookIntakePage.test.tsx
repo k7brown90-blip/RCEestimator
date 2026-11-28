@@ -56,8 +56,7 @@ const REVIEW: PbReview = {
     id: "line-1", itemId: "ITEM-1", description: "Diagnostic per outlet", quantity: 6,
     quantitySource: "COUNT", difficulty: "normal", option: "A", status: "CONFIRMED",
   } as unknown as PbReview["confirmedLines"][number]],
-  openQuestions: [],
-  counts: { proposed: 0, confirmed: 1, openQuestions: 0 },
+  counts: { proposed: 0, confirmed: 1 },
 };
 
 function issued(overrides: Partial<PbIssuedEstimate> = {}): PbIssuedEstimate {
@@ -902,5 +901,84 @@ describe("PriceBookIntakePage - an email that saved the draft as a new revision"
 
     await waitFor(() => expect(api.pbIssuedDetail).toHaveBeenCalledWith("est-2"));
     await waitFor(() => expect(screen.getAllByText(/Your changes were saved to estimate 2026-1098 \(revision 2\), but the email was not sent/)).toHaveLength(1));
+  });
+});
+
+/*
+  Kyle, 2026-11-28 (debug report on "Open questions - 3", Estimate Intake): "I dont want these
+  questions as I already confirmed the line item once. this is a redundant and repetative process
+  that wastes time."
+
+  "Build the draft (AI)" no longer asks anything. Review has no "Open questions" panel, and what the
+  model could not place is one note under the result - nothing to answer.
+*/
+describe("PriceBookIntakePage - no AI questions (Kyle, 2026-11-28)", () => {
+  it("Review shows no 'Open questions' panel, even from a payload that still carries an old question", async () => {
+    mockPage(null);
+    // An older server (or a cached payload) that still sends the field must not bring the panel back.
+    vi.spyOn(api, "pbReview").mockResolvedValue({
+      ...REVIEW,
+      openQuestions: [{ id: "q1", question: "What is the pool plug?", rawText: null, raisedBy: "ai:test", createdAt: "2026-11-28T13:57:55.000Z" }],
+      counts: { proposed: 0, confirmed: 1, openQuestions: 1 },
+    } as unknown as PbReview);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    expect(await screen.findByText(/Confirmed lines — 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/Open questions/)).toBeNull();
+    expect(screen.queryByText("What is the pool plug?")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
+  });
+
+  it("the totals bar does not count questions toward what is still open", async () => {
+    mockPage(null);
+    vi.spyOn(api, "pbReview").mockResolvedValue({ ...REVIEW, counts: { proposed: 0, confirmed: 1, openQuestions: 3 } } as unknown as PbReview);
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    await screen.findByText(/Confirmed lines — 1/);
+    expect(screen.queryByText(/question\(s\) open/)).toBeNull();
+  });
+
+  it("'Build the draft (AI)' reads 'N line(s) proposed' and a 'Couldn't place' note - no question count, nothing to answer", async () => {
+    mockPage(null);
+    vi.spyOn(api, "pbProposeFromWalkthrough").mockResolvedValue({
+      path: "ai",
+      proposed: [{ id: "l1", itemId: "ITEM-1", quantity: 2, description: "Diagnostic per outlet" }],
+      notPlaced: [
+        { text: "weird outdoor plug by the pool", reason: "nothing in the price book fits" },
+        { text: "a 4-inch junction box", reason: "" },
+      ],
+      rejected: [],
+      usage: null,
+    });
+    renderWithProviders(<PriceBookIntakePage />, { route: "/estimate-intake?draft=draft-1&account=acct-1&address=prop-1&tab=walkthrough" });
+    fireEvent.change(await screen.findByPlaceholderText(/4 20A receptacle/), { target: { value: "2 outlets\nweird outdoor plug by the pool" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build the draft (AI)" }));
+    expect(await screen.findByText("1 line(s) proposed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Couldn't place: weird outdoor plug by the pool (nothing in the price book fits); a 4-inch junction box - add them by hand if needed."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/question/i)).toBeNull();
+  });
+
+  // Review fix (Kyle, 2026-11-28): the Browse tab's empty result used to tell him to "add it as a
+  // question on the Walkthrough tab" - a control that does not exist. It now points at real steps.
+  it("Browse's 'Nothing matched' no longer tells him to add a question", async () => {
+    mockPage(null);
+    vi.spyOn(api, "pbAtomics").mockResolvedValue([] as never);
+    renderWithProviders(<PriceBookIntakePage />, { route: "/estimate-intake?draft=draft-1&account=acct-1&address=prop-1&tab=browse" });
+    fireEvent.change(await screen.findByPlaceholderText(/Search the price book/), { target: { value: "pool plug" } });
+    const note = await screen.findByText(/Nothing matched\./);
+    expect(note.textContent).toMatch(/add it to your price book first, then add it from here/);
+    expect(note.textContent).not.toMatch(/question/i);
+  });
+
+  it("says nothing about 'Couldn't place' when everything was placed", async () => {
+    mockPage(null);
+    vi.spyOn(api, "pbProposeFromWalkthrough").mockResolvedValue({
+      path: "ai", proposed: [{ id: "l1", itemId: "ITEM-1", quantity: 2, description: "Diagnostic per outlet" }], notPlaced: [], rejected: [], usage: null,
+    });
+    renderWithProviders(<PriceBookIntakePage />, { route: "/estimate-intake?draft=draft-1&account=acct-1&address=prop-1&tab=walkthrough" });
+    fireEvent.change(await screen.findByPlaceholderText(/4 20A receptacle/), { target: { value: "2 outlets" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build the draft (AI)" }));
+    expect(await screen.findByText("1 line(s) proposed")).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't place/)).toBeNull();
   });
 });

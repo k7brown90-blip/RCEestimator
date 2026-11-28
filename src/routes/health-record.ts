@@ -1196,8 +1196,9 @@ healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequ
   // estimateLink and never the raw token (PUNCHLIST B5; the issue route and job-brief do the same).
   // door "field": a SIGNED estimate's reviseReason is Kyle's sentence (changing it is office only).
   const lifecycle = await getDraftLifecycle(prisma, draft.id, "field");
-  // The AI-suggested lines and open questions waiting on the tech — the same two lists the CRM's
-  // review payload carries, shaped for the phone (getDraftSuggestions). No hours, no cost, no usage.
+  // The AI-suggested lines waiting on the tech — the same list the CRM's review payload carries,
+  // shaped for the phone (getDraftSuggestions). No hours, no cost, no usage. No "open questions" list
+  // any more (Kyle, 2026-11-28).
   const suggestions = await getDraftSuggestions(prisma, draft.id);
   if (lifecycle.issued) {
     const { estimateLink } = await import("../services/issuedEstimateSend");
@@ -1216,11 +1217,12 @@ healthRecordTechRouter.get("/quotes/:draftId", asyncHandler(async (req: TechRequ
       // no supplier prices, no markup.
       supplierId: details.supplierId,
       lifecycle,
-      // "AI proposals" and "Open questions": each is confirmed / rejected / resolved on this screen
-      // (POST /quote-lines/:id/confirm|reject, POST /quote-questions/:id/resolve), and the draft
-      // cannot be issued while either list has anything in it.
+      // "AI proposals": each is confirmed / rejected on this screen (POST /quote-lines/:id/confirm|
+      // reject), and the draft cannot be issued while the list has anything in it.
       suggestedLines: suggestions.suggestedLines,
-      openQuestions: suggestions.openQuestions,
+      // Always empty (Kyle, 2026-11-28: no AI questions). Kept only so a phone still running the
+      // pre-deploy bundle reads an empty list; the current app ignores it.
+      openQuestions: [] as never[],
       // Change orders are the one place a negative quantity is legal
       // (assertQuantityAllowed, atomicEstimateService.ts) — the phone needs
       // to know which draft this is before it decides whether to let a

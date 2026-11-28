@@ -62,7 +62,7 @@ export const SENDING_SHOW_REASON = 'Sending your changes — the customer\'s vie
  */
 export const OFFLINE_SHOW_SAVED_REASON = 'Needs signal — this quote has not been issued; with no signal only an estimate issued with signal and saved on this phone can be shown and signed'
 
-/** Walk the job (AI), basic match, Confirm / Reject, Open questions (§2). */
+/** Walk the job (AI), basic match, Confirm / Reject (§2). */
 export const OFFLINE_AI_REASON = 'Needs signal — the AI and the office\'s suggestions are online only'
 /** The lifecycle calls decided at the office (§2). */
 export const OFFLINE_COPY_LINES_REASON = 'Needs signal — copying lines is decided at the office'

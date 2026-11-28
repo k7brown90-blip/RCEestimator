@@ -1,7 +1,7 @@
 import { unreviewedReasons } from '../../../shared/suggestedLines'
 
 /**
- * Words and small rules the field Quote screen's "AI proposals", "Open questions" and "Walk the job"
+ * Words and small rules the field Quote screen's "AI proposals" and "Walk the job"
  * sections share with their tests (2026-10-08, one-estimating-system plan, Phase 2 unit D). Kept out
  * of the component file so it exports only components. Worded like the office's Estimate Intake for
  * the same control, so the two screens read alike.
@@ -12,11 +12,6 @@ import { unreviewedReasons } from '../../../shared/suggestedLines'
 /** The heading over the list of suggested lines — the office's own words. */
 export function proposalsHeading(count: number): string {
   return `AI proposals — ${count} waiting on you`
-}
-
-/** The heading over the list of open questions — the office's own words. */
-export function questionsHeading(count: number): string {
-  return `Open questions — ${count}`
 }
 
 /** What a suggestion is until a person decides: the sentence under the "AI proposals" heading. */
@@ -74,9 +69,13 @@ export function walkthroughPathBadge(path: 'ai' | 'basic', degradedReason: strin
     : `Basic match${degradedReason ? ` — AI unavailable: ${degradedReason}` : ''}`
 }
 
-/** "3 line(s) proposed · 1 question(s) · 1 refused" — the office's summary after an AI build. */
-export function aiSummaryText(proposed: number, questions: number, rejected: number): string {
-  return `${proposed} line(s) proposed · ${questions} question(s)${rejected > 0 ? ` · ${rejected} refused` : ''}`
+/**
+ * "3 line(s) proposed · 1 refused" — the office's summary after an AI build. What the model could not
+ * place is a separate note (notPlacedNote, shared/suggestedLines.ts); there are no questions to count
+ * (Kyle, 2026-11-28).
+ */
+export function aiSummaryText(proposed: number, rejected: number): string {
+  return `${proposed} line(s) proposed${rejected > 0 ? ` · ${rejected} refused` : ''}`
 }
 
 /** What an UNMATCHED row says: which of the tech's words the book does not know, and where to look instead. */
@@ -95,12 +94,13 @@ export function suggestedPointer(count: number): string {
 
 /**
  * Why the Issue / "Save changes to the estimate" button is greyed, or null. The lifecycle's own reason
- * (signed, lost, nothing changed) wins; otherwise suggestions or questions still waiting on the tech
+ * (signed, lost, nothing changed) wins; otherwise suggestions still waiting on the tech
  * block it, in the SAME sentence the server's issue refusal gives (shared/suggestedLines.ts) — so the
  * button explains itself before it is pressed and the refusal, if it were pressed, would say the same.
+ * Open questions never block (Kyle, 2026-11-28), so they are not an argument.
  */
-export function issueDisabledReason(lifecycleReason: string | null, suggested: number, questions: number): string | null {
+export function issueDisabledReason(lifecycleReason: string | null, suggested: number): string | null {
   if (lifecycleReason) return lifecycleReason
-  const waiting = unreviewedReasons(suggested, questions).join(' ')
+  const waiting = unreviewedReasons(suggested).join(' ')
   return waiting || null
 }

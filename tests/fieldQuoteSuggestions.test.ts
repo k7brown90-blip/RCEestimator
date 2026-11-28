@@ -1,7 +1,13 @@
 /**
- * AI-suggested lines, open questions and the walkthrough list from BOTH doors — Phase 2 unit D of the
+ * AI-suggested lines and the walkthrough list from BOTH doors — Phase 2 unit D of the
  * one-estimating-system plan (Kyle, 2026-10-08). NOT Savannah: the Walkthrough tab's "Build the draft
  * (AI)" and basic match.
+ *
+ * KYLE, 2026-11-28: "I dont want these questions as I already confirmed the line item once. this is a
+ * redundant and repetative process that wastes time." Open questions no longer show on either screen,
+ * are not in either payload, and never block Issue on either door. The tests below that used to pin
+ * the question list and the question gate now pin its absence; the Resolve routes stay (old rows) and
+ * keep their tests.
  *
  * Each rule is ONE service function — confirmProposedLine / rejectProposedLine / resolveQuestion /
  * getDraftSuggestions (atomicEstimateService.ts), proposeWalkthroughForDraft (aiProposer.ts) and
@@ -57,7 +63,7 @@ vi.mock("../src/services/confirmationEmail", async (importOriginal) => {
 
 import { app } from "../src/app";
 import { addLine, createDraft, proposeLines, raiseQuestion } from "../src/services/atomicEstimateService";
-import { unreviewedReasons } from "../shared/suggestedLines";
+import { notPlacedNote, unreviewedReasons } from "../shared/suggestedLines";
 import { TEST_SIGNATURE } from "./helpers/signature";
 import { deleteAtomics, ensurePriceBookGates, quotableAtomic, seedAtomics } from "./helpers/priceBookFixture";
 
@@ -173,11 +179,12 @@ function keysOf(v: unknown, out = new Set<string>()): Set<string> {
 
 // ─── The quote payload ────────────────────────────────────────────────────────
 
-describe("GET /health-record/quotes/:draftId — what the phone lists under AI proposals and Open questions", () => {
-  it("carries the suggested lines (with the book's name and the model's reasoning) and the open questions", async () => {
+describe("GET /health-record/quotes/:draftId — what the phone lists under AI proposals", () => {
+  it("carries the suggested lines (with the book's name and the model's reasoning) and NO open questions", async () => {
     const d = await newDraft("payload");
     const lineId = await propose(d.id, FT, 40);
-    const qId = await askQuestion(d.id);
+    // A question already sitting on the draft (raised before 2026-11-28) is not sent to the phone.
+    await askQuestion(d.id);
 
     const q = await quotePayload(d.id);
     expect(q.suggestedLines).toEqual([
@@ -186,35 +193,35 @@ describe("GET /health-record/quotes/:draftId — what the phone lists under AI p
         reasoning: "The panel schedule shows a spare space, so a breaker fits.", proposedBy: "ai:test-model",
       },
     ]);
-    expect(q.openQuestions).toEqual([
-      { id: qId, question: "The customer mentioned a pool plug — what is it?", rawText: "that weird outdoor plug by the pool", raisedBy: "ai:test-model" },
-    ]);
+    // Sent empty, never dropped (Kyle, 2026-11-28, review fix): a phone still on the pre-deploy bundle reads this key.
+    expect(q.openQuestions).toEqual([]);
+    expect(JSON.stringify(q)).not.toContain("pool plug");
     // The suggestion is NOT priced: it is in `lines` as PROPOSED with no total, and in no option total.
     const row = q.lines.find((l: { id: string }) => l.id === lineId);
     expect(row).toMatchObject({ state: "PROPOSED", lineTotal: null });
   });
 
-  it("agrees with the CRM's review of the same draft (same rows, same reasoning)", async () => {
+  it("agrees with the CRM's review of the same draft (same rows, same reasoning), and neither carries questions", async () => {
     const d = await newDraft("payload-crm");
-    const lineId = await propose(d.id);
-    const qId = await askQuestion(d.id);
+    await propose(d.id);
+    await askQuestion(d.id);
     const q = await quotePayload(d.id);
     const review = await request(app).get(`/price-book/drafts/${d.id}/review`);
     expect(review.body.proposedLines.map((l: { id: string; reasoning: string }) => [l.id, l.reasoning]))
       .toEqual(q.suggestedLines.map((l: { id: string; reasoning: string }) => [l.id, l.reasoning]));
-    expect(review.body.openQuestions.map((x: { id: string }) => x.id)).toEqual(q.openQuestions.map((x: { id: string }) => x.id));
-    expect([lineId, qId].every(Boolean)).toBe(true);
+    // Empty / zero, never dropped (Kyle, 2026-11-28, review fix): an already-open CRM tab reads
+    // `review.openQuestions.length` and must not throw after the deploy.
+    expect(review.body.openQuestions).toEqual([]);
+    expect(review.body.counts).toEqual({ proposed: 1, confirmed: 1, openQuestions: 0 });
+    expect(q.openQuestions).toEqual([]);
   });
 
-  it("a resolved question and a confirmed line are no longer listed", async () => {
+  it("a confirmed line is no longer listed", async () => {
     const d = await newDraft("payload-clear");
     const lineId = await propose(d.id);
-    const qId = await askQuestion(d.id);
     expect((await auth(request(app).post(`/health-record/quote-lines/${lineId}/confirm`)).send({})).status).toBe(200);
-    expect((await auth(request(app).post(`/health-record/quote-questions/${qId}/resolve`)).send({ resolutionNote: "A 20A outdoor GFCI." })).status).toBe(200);
     const q = await quotePayload(d.id);
     expect(q.suggestedLines).toEqual([]);
-    expect(q.openQuestions).toEqual([]);
   });
 
   it("no hours, labour, rate, cost, markup, Synchrony or usage key anywhere in what the phone gets for them", async () => {
@@ -223,7 +230,7 @@ describe("GET /health-record/quotes/:draftId — what the phone lists under AI p
     await askQuestion(d.id);
     const q = await quotePayload(d.id);
     const banned = /hours|labou?r|rate|cost|markup|synchrony|usage|token|sell|price/i;
-    for (const k of keysOf({ s: q.suggestedLines, o: q.openQuestions })) {
+    for (const k of keysOf({ s: q.suggestedLines })) {
       expect(banned.test(k), `${k} must not reach the phone`).toBe(false);
     }
   });
@@ -408,35 +415,65 @@ describe("POST /health-record/quote-questions/:questionId/resolve — the CRM's 
 
 // ─── The issue refusal ────────────────────────────────────────────────────────
 
-describe("the draft cannot be issued while suggestions or questions wait, and the refusal says what to do", () => {
-  it("names the heading and the button that clears each list, then issues once they are cleared", async () => {
+describe("the draft cannot be issued while AI suggestions wait, and the refusal says what to do; questions never block", () => {
+  it("names the heading and the buttons that clear the list, then issues once it is cleared - an old open question does not matter", async () => {
     const d = await newDraft("issue-gate");
     const lineId = await propose(d.id);
-    const qId = await askQuestion(d.id);
+    // An unresolved question on the draft, as left by an older build. It must not appear in the refusal.
+    await askQuestion(d.id);
 
     const refused = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
     expect(refused.status).toBe(409);
     const words = (refused.body.reasons as string[]).join(" ");
     expect(words).toContain("1 AI-suggested line is still unconfirmed");
-    expect(words).toContain("1 open question is still unresolved");
-    for (const w of ['"AI proposals"', "Confirm", "Reject", '"Open questions"', "Resolve"]) expect(words).toContain(w);
+    for (const w of ['"AI proposals"', "Confirm", "Reject"]) expect(words).toContain(w);
+    expect(words).not.toMatch(/question/i);
     // The phone greys its Issue button with these very sentences before the press.
-    for (const sentence of unreviewedReasons(1, 1)) expect(refused.body.reasons).toContain(sentence);
+    for (const sentence of unreviewedReasons(1)) expect(refused.body.reasons).toContain(sentence);
+    expect(refused.body.reasons).toEqual(unreviewedReasons(1));
 
     expect((await auth(request(app).post(`/health-record/quote-lines/${lineId}/confirm`)).send({})).status).toBe(200);
-    // One thing still waiting: only the question's sentence remains.
-    const stillRefused = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
-    expect(stillRefused.status).toBe(409);
-    expect(stillRefused.body.reasons).toEqual(unreviewedReasons(0, 1));
-    expect((await auth(request(app).post(`/health-record/quote-questions/${qId}/resolve`)).send({ resolutionNote: "Done." })).status).toBe(200);
+    // The question is still unresolved - and the draft issues.
     const issued = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
     expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    expect(await prisma.priceBookDraftQuestion.count({ where: { draftId: d.id, resolvedAt: null } })).toBe(1);
+  });
+
+  it("a draft that already has an unresolved question issues from the FIELD door", async () => {
+    const d = await newDraft("issue-old-question-field");
+    await askQuestion(d.id);
+    await askQuestion(d.id, "Another one left from before?");
+    const issued = await auth(request(app).post(`/health-record/quotes/${d.id}/issue`)).send({});
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    // Nothing was deleted: the rows are still there, unresolved, just not in the way.
+    expect(await prisma.priceBookDraftQuestion.count({ where: { draftId: d.id, resolvedAt: null } })).toBe(2);
+  });
+
+  it("a draft that already has an unresolved question issues from the CRM door", async () => {
+    const d = await newDraft("issue-old-question-crm");
+    await askQuestion(d.id);
+    const issued = await request(app).post(`/price-book/drafts/${d.id}/issue`).send({ accountId: customerId, serviceAddressId: propertyId });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    expect(await prisma.priceBookDraftQuestion.count({ where: { draftId: d.id, resolvedAt: null } })).toBe(1);
+  });
+
+  it("unconfirmed AI lines still block the CRM door, with the same sentence", async () => {
+    const d = await newDraft("issue-unconfirmed-crm");
+    await propose(d.id);
+    const refused = await request(app).post(`/price-book/drafts/${d.id}/issue`).send({ accountId: customerId, serviceAddressId: propertyId });
+    expect(refused.status).toBe(409);
+    expect(refused.body.reasons).toEqual(unreviewedReasons(1));
   });
 
   it("the shared sentence is plural-aware", () => {
-    expect(unreviewedReasons(0, 0)).toEqual([]);
-    expect(unreviewedReasons(3, 0)[0]).toContain("3 AI-suggested lines are still unconfirmed");
-    expect(unreviewedReasons(0, 2)[0]).toContain("2 open questions are still unresolved");
+    expect(unreviewedReasons(0)).toEqual([]);
+    expect(unreviewedReasons(3)[0]).toContain("3 AI-suggested lines are still unconfirmed");
+  });
+
+  it("the one 'Couldn't place' note both apps print", () => {
+    expect(notPlacedNote([])).toBeNull();
+    expect(notPlacedNote([{ text: "a", reason: "" }, { text: "b", reason: "no match" }, { text: "c", reason: "" }]))
+      .toBe("Couldn't place: a; b (no match); c - add them by hand if needed.");
   });
 });
 
@@ -452,7 +489,9 @@ describe("POST /health-record/quotes/:draftId/walkthrough/propose — the CRM's 
     // The truck gets a fixed sentence, never the upstream error text (it is shown to the customer).
     expect(field.body.data.degradedReason).toBe("The AI helper is unavailable right now.");
     expect(JSON.stringify(field.body)).not.toContain("OPENAI_API_KEY");
-    expect(field.body.data).toMatchObject({ proposed: [], questions: [], rejected: [] });
+    expect(field.body.data).toMatchObject({ proposed: [], notPlaced: [], rejected: [] });
+    // Empty, never dropped: a pre-deploy bundle reads `.questions.length` (Kyle, 2026-11-28, review fix).
+    expect(field.body.data.questions).toEqual([]);
     expect(keysOf(field.body)).not.toContain("usage");
     expect(await prisma.priceBookDraftLine.count({ where: { draftId: d.id } })).toBe(before);
 

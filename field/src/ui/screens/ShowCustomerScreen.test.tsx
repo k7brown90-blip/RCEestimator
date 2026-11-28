@@ -76,7 +76,6 @@ const quote = (over: Record<string, unknown> = {}): QuoteState =>
     jobDescription: 'Replace the 100A panel and add the garage circuits.',
     lifecycle: lifecycle(),
     suggestedLines: [],
-    openQuestions: [],
     isChangeOrder: false,
     changeOrderFor: null,
     lines: [
@@ -369,7 +368,7 @@ describe('Sign now — greyed with its reason', () => {
   it('lost: the "reopen it first" words', () => {
     expect(live({ decision: presentDecision(issuedLifecycle({ reviseReason: 'Estimate 2026-1098 is marked lost — reopen it before changing or issuing it again.' }, { status: 'lost' })) })).toMatch(/reopen it/)
   })
-  it('AI proposals / open questions block an issue, in the server\'s words — but not a reuse', () => {
+  it('AI proposals block an issue, in the server\'s words — but not a reuse', () => {
     const why = '2 AI-suggested lines are waiting to be confirmed or rejected.'
     expect(live({ issueBlockedReason: why })).toBe(why)
     expect(live({ issueBlockedReason: why, decision: presentDecision(issuedLifecycle()) })).toBeNull()

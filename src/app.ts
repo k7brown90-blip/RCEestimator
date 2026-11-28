@@ -2199,9 +2199,8 @@ app.delete("/price-book/lines/:lineId", asyncHandler(async (req, res) => {
   }
 }));
 
-// Raise a question by hand — where an unresolved walkthrough row lands. A line the system
-// cannot match must become a visible question, never dropped text. The rule (and the
-// signed-draft guard) is raiseQuestion in the service.
+// Raise a question by hand. No screen calls this and a question no longer blocks issue or shows on
+// Review (Kyle, 2026-11-28); kept as it was. The signed-draft guard is raiseQuestion in the service.
 app.post("/price-book/drafts/:draftId/questions", asyncHandler(async (req, res) => {
   const body = z.object({
     question: z.string().trim().min(1),
@@ -2225,7 +2224,7 @@ app.post("/price-book/drafts/:draftId/questions", asyncHandler(async (req, res) 
  * THE PRIMARY INTAKE PATH (P023 / F10).
  *
  * The walkthrough goes to the model, which composes proposed lines against the real catalog and
- * turns anything it cannot place into a question. Results land through `proposeLines()`, so the
+ * lists anything it cannot place as a note (`notPlaced`, nothing stored). Results land through `proposeLines()`, so the
  * propose-only contract is enforced by the same code the MCP tool uses — nothing here can confirm,
  * price or finalize.
  *
@@ -2310,13 +2309,15 @@ app.get("/price-book/drafts/:draftId/review", asyncHandler(async (req, res) => {
       confirmedBy: l.confirmedBy, confirmedAt: l.confirmedAt,
       editedBeforeConfirm: l.editedBeforeConfirm, proposedBy: l.proposedBy,
     })),
-    openQuestions: review.openQuestions.map((q) => ({
-      id: q.id, question: q.question, rawText: q.rawText, raisedBy: q.raisedBy, createdAt: q.createdAt,
-    })),
+    // No questions any more (Kyle, 2026-11-28): the AI no longer asks them and nothing blocks on one.
+    // The keys stay, always empty / zero, only so a CRM tab opened before this deploy (a stale bundle
+    // reads `review.openQuestions.length`) renders no panel instead of throwing. Current screens
+    // ignore them. Rows already on a draft are not sent and not counted.
+    openQuestions: [] as never[],
     counts: {
       proposed: review.proposedLines.length,
       confirmed: review.confirmedLines.length,
-      openQuestions: review.openQuestions.length,
+      openQuestions: 0,
     },
   });
 }));

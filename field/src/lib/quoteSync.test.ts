@@ -81,7 +81,6 @@ function serverQuote(draftId = D1): QuoteState {
     jobDescription: 'Replace the panel.',
     lifecycle: { status: 'draft', issued: null, hasUnsavedChanges: false, reviseReason: null, deleteReason: null, copyReason: null },
     suggestedLines: [],
-    openQuestions: [],
     isChangeOrder: false,
     changeOrderFor: null,
     lines: [

@@ -27,7 +27,7 @@ import type { PhonePriceSheetResponse } from '../../../shared/fieldPriceSheet'
 import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView } from '../../../shared/jobCompletion'
 import type { EstimatePhoto } from '../../../shared/estimatePhotos'
 import { estimateEmailRequest, type EstimateEmailAnswer, type EstimateEmailChoices } from '../../../shared/estimateEmail'
-import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
+import type { QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
 import type { ApprovalCardView, ApprovalsResponse, TechBadge, TechThreadDetail, TechThreadsResponse } from '../../../shared/hub/views'
 import { toPushV2 } from '../domain/v2Types'
 
@@ -1883,11 +1883,10 @@ export interface QuoteState {
   // (shared/draftLifecycle.ts). The screen shows the issued estimate from this, offers "Edit the
   // estimate", and relabels Issue as "Save changes to the estimate".
   lifecycle: DraftLifecycle
-  // The AI-suggested lines ("AI proposals") and open questions waiting on the tech — the same two
-  // lists the office's Estimate Intake shows, from the same server function. Not priced; the draft
-  // cannot be issued while either has anything in it (shared/suggestedLines.ts).
+  // The AI-suggested lines ("AI proposals") waiting on the tech — the same list the office's Estimate
+  // Intake shows, from the same server function. Not priced; the draft cannot be issued while it has
+  // anything in it (shared/suggestedLines.ts). There is no open-questions list any more (Kyle, 2026-11-28).
   suggestedLines: QuoteSuggestedLine[]
-  openQuestions: FieldOpenQuestion[]
   // A change order is the one draft where a negative quantity is legal
   // (assertQuantityAllowed, server-side) — the quantity input reads this to
   // decide whether to let a negative value through.
@@ -2303,9 +2302,9 @@ export async function copyQuoteToNew(draftId: string): Promise<{ draftId: string
   return crmRequest(`/quotes/${draftId}/duplicate`, { method: 'POST', body: '{}' })
 }
 
-// ─── AI proposals, open questions and the walkthrough list (Phase 2 unit D, 2026-10-08) ──
+// ─── AI proposals and the walkthrough list (Phase 2 unit D, 2026-10-08) ──
 //    The same service functions Estimate Intake calls (confirmProposedLine, rejectProposedLine,
-//    resolveQuestion, proposeWalkthroughForDraft, resolveWalkthroughRows) through tech-scoped
+//    proposeWalkthroughForDraft, resolveWalkthroughRows) through tech-scoped
 //    wrappers. Live calls: the AI and the office's suggestions are online only (design §2), so with
 //    no signal the Quote screen greys them with that reason (Phase 7 U5, 2026-10-10).
 
@@ -2322,15 +2321,11 @@ export async function rejectSuggestedLine(lineId: string): Promise<void> {
   await crmRequest(`/quote-lines/${lineId}/reject`, { method: 'POST', body: '{}' })
 }
 
-/** "Resolve" on an open question, with the answer / what was done. */
-export async function resolveQuoteQuestion(questionId: string, resolutionNote: string): Promise<void> {
-  await crmRequest(`/quote-questions/${questionId}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionNote }) })
-}
-
 /**
  * "Build the draft (AI)". `path` says which brain answered: 'ai' wrote suggestions onto the quote
- * (they show under "AI proposals"); 'basic' means the model was unavailable, nothing was written,
- * and `degradedReason` says why — the screen then runs the basic match.
+ * (they show under "AI proposals"; `notPlaced` is what it could not place — a note, nothing stored);
+ * 'basic' means the model was unavailable, nothing was written, and `degradedReason` says why — the
+ * screen then runs the basic match.
  */
 export async function proposeFromWalkthroughList(draftId: string, text: string): Promise<WalkthroughProposal> {
   return crmRequest(`/quotes/${draftId}/walkthrough/propose`, { method: 'POST', body: JSON.stringify({ text }) })

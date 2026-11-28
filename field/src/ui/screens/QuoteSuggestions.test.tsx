@@ -1,5 +1,5 @@
 /**
- * The field Quote screen's AI proposals, open questions and "Walk the job" (2026-10-08,
+ * The field Quote screen's AI proposals and "Walk the job" (2026-10-08,
  * one-estimating-system plan, Phase 2, unit D). Rendered to static markup (the field suite runs in
  * node with no DOM) and read the way a tech reads the screen: what is on it, what is greyed, and what
  * the reason says.
@@ -7,17 +7,17 @@
 
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { OpenQuestionsPanel, SuggestedLinesPanel, WalkthroughList, WalkthroughRowCard } from './QuoteSuggestions'
-import type { FieldOpenQuestion, FieldWalkthroughRow, QuoteSuggestedLine } from '../../../../shared/suggestedLines'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import * as Suggestions from './QuoteSuggestions'
+import { AiBuildSummary, SuggestedLinesPanel, WalkthroughList, WalkthroughRowCard } from './QuoteSuggestions'
+import type { FieldWalkthroughRow, NotPlacedScope, QuoteSuggestedLine } from '../../../../shared/suggestedLines'
 
 const SIGNED = 'Estimate 2026-1098 from this draft is SIGNED. A signed agreement is never edited — raise a change order instead.'
 
 const suggestion = (over: Partial<QuoteSuggestedLine> = {}): QuoteSuggestedLine => ({
   id: 's1', itemId: 'A016', description: '20A GFCI receptacle', quantity: 4, difficulty: 'NORMAL', option: 'A',
   reasoning: 'The walkthrough lists four outdoor outlets.', proposedBy: 'ai:gpt-5.1', ...over,
-})
-const question = (over: Partial<FieldOpenQuestion> = {}): FieldOpenQuestion => ({
-  id: 'q1', question: 'What is the weird outdoor plug by the pool?', rawText: 'that weird outdoor plug', raisedBy: 'ai:gpt-5.1', ...over,
 })
 
 const noop = async () => {}
@@ -71,39 +71,46 @@ describe('SuggestedLinesPanel — "AI proposals"', () => {
   })
 })
 
-describe('OpenQuestionsPanel — "Open questions"', () => {
-  const render = (qs: FieldOpenQuestion[], lockedReason: string | null = null, busy = false) =>
-    renderToStaticMarkup(<OpenQuestionsPanel questions={qs} busy={busy} lockedReason={lockedReason} onResolve={noop} />)
-
-  it('renders nothing when nothing is open', () => {
-    expect(render([])).toBe('')
+// Kyle, 2026-11-28 ("I already confirmed the line item once. this is a redundant and repetative process
+// that wastes time."): the phone has no "Open questions" panel. Nothing here can render one, and what
+// the model could not place is one note under the AI result.
+describe('no "Open questions" on the Quote screen', () => {
+  it('the panel is gone from the module', () => {
+    expect((Suggestions as Record<string, unknown>).OpenQuestionsPanel).toBeUndefined()
   })
 
-  it('has the heading, the question, who raised it, the "Answer / what you did" box and Resolve', () => {
-    const html = render([question()])
-    expect(html).toContain('Open questions — 1')
-    expect(html).toContain('What is the weird outdoor plug by the pool?')
-    expect(html).toContain('raised by ai:gpt-5.1')
-    expect(html).toContain('placeholder="Answer / what you did"')
-    expect(html).toContain('>Resolve<')
+  it('the Quote screen reads no question list and mounts no questions panel', () => {
+    const screen = readFileSync(path.join(__dirname, 'QuoteScreen.tsx'), 'utf8')
+    const code = screen.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*|\{\/\*)/.test(l)).join('\n')
+    expect(code).not.toMatch(/openQuestions|OpenQuestionsPanel|resolveQuoteQuestion/)
+  })
+})
+
+describe('AiBuildSummary - what "Build the draft (AI)" answers with', () => {
+  const render = (over: Partial<{ proposed: number; notPlaced: NotPlacedScope[]; rejected: number }> = {}) =>
+    renderToStaticMarkup(<AiBuildSummary summary={{ proposed: 2, notPlaced: [], rejected: 0, ...over }} />)
+
+  it("reads 'N line(s) proposed' and no question count, with no note when everything was placed", () => {
+    const html = render()
+    expect(html).toContain('2 line(s) proposed')
+    expect(html).not.toMatch(/question/i)
+    expect(html).not.toContain("Couldn&#x27;t place")
+    expect(html).not.toContain("Couldn't place")
   })
 
-  it('Resolve is greyed until something is written (with the reason as its tooltip)', () => {
-    const html = render([question()])
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="Write what you did or found out first"[^>]*>Resolve</)
-  })
-
-  it('a SIGNED quote greys the box and Resolve with the reason', () => {
-    const html = render([question()], SIGNED)
-    expect((html.match(/disabled=""/g) ?? []).length).toBe(2)
-    expect((html.match(new RegExp(`title="${SIGNED}"`, 'g')) ?? []).length).toBe(2)
+  it("lists what it could not place as ONE note to read - nothing to answer", () => {
+    const html = render({ notPlaced: [{ text: 'weird outdoor plug by the pool', reason: 'nothing in the price book fits' }, { text: 'a 4-inch junction box', reason: '' }] })
+    expect(html.replace(/&#x27;/g, "'")).toContain("Couldn't place: weird outdoor plug by the pool (nothing in the price book fits); a 4-inch junction box - add them by hand if needed.")
+    expect(html).not.toMatch(/question/i)
+    expect(html).not.toContain('<input')
+    expect(html).not.toContain('Resolve')
   })
 })
 
 describe('WalkthroughList — "Walk the job — list what you need"', () => {
   const render = (lockedReason: string | null = null) =>
     renderToStaticMarkup(
-      <WalkthroughList lockedReason={lockedReason} busy={false} addInto="B" onPropose={async () => ({ path: 'basic', proposed: [], questions: [], rejected: [] })} onMatch={async () => []} onAdd={async () => true} />,
+      <WalkthroughList lockedReason={lockedReason} busy={false} addInto="B" onPropose={async () => ({ path: 'basic', proposed: [], notPlaced: [], rejected: [] })} onMatch={async () => []} onAdd={async () => true} />,
     )
 
   it('is one labelled button until opened', () => {

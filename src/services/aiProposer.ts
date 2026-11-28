@@ -15,7 +15,7 @@
  * calls**, so every P011 guarantee is enforced by the same code:
  *
  *   * lines land `PROPOSED` and price nothing until a human confirms;
- *   * an itemId that is not a live `PriceBookAtomic` becomes a QUESTION, never a nearest guess;
+ *   * an itemId that is not a live `PriceBookAtomic` is reported as NOT PLACED, never a nearest guess;
  *   * a line without reasoning is rejected;
  *   * the model cannot confirm, price, finalize, or set a difficulty multiplier — difficulty is
  *     an enum selecting a published NECA column, not a number.
@@ -78,16 +78,18 @@ const MODEL_ACTOR = `ai:${MODEL}`;
 const INSTRUCTIONS = `You compose electrical estimate line items from an electrician's walkthrough notes.
 
 You are given the COMPLETE catalog. Every line you propose MUST use an itemId from it, copied
-exactly. Never invent an itemId. Never adapt one. If nothing in the catalog fits, that scope
-becomes a question instead of a line — an unmatched item is a question for the tech, not a
-nearest-guess match.
+exactly. Never invent an itemId. Never adapt one. If nothing in the catalog fits, do NOT propose
+a line for it and do NOT ask a question: list it in notPlaced instead, with the words the
+walkthrough used (text) and a few words on why it could not be placed (reason). notPlaced is a
+note the tech reads — nobody answers it, so never phrase it as a question. An unmatched item is
+never a nearest-guess match.
 
 QUANTITIES
 - A count of devices is a quantity: "5 duplex receptacles" -> quantity 5.
 - A measured run is a quantity in feet: "100 ft 14/2" -> quantity 100, quantitySource MEASURED_LENGTH.
 - A ROOM DIMENSION IS NOT A QUANTITY. "12 ft x 12 ft" describes the room; it is context for how
   much cable or how many devices might be needed, never a line with quantity 12. If a dimension
-  is all you have for an item, ask a question.
+  is all you have for an item, list that item in notPlaced.
 - Anything sold by the foot must use MEASURED_LENGTH. Counted things use COUNT.
 - If the notes do not give a quantity, propose your best reading and say so in the reasoning —
   the tech corrects every quantity before it counts.
@@ -114,7 +116,7 @@ Return JSON only, matching the schema you are given.`;
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["lines", "questions"],
+  required: ["lines", "notPlaced"],
   properties: {
     // OpenAI's strict mode requires EVERY property to appear in `required`; optionality is
     // expressed by allowing null, not by omission. Getting this wrong is a 400, which the
@@ -136,15 +138,17 @@ const SCHEMA = {
         },
       },
     },
-    questions: {
+    // Scope that could not be placed on a catalog item. A plain list for the tech to read - it
+    // creates no database row and nothing waits on it (Kyle, 2026-11-28).
+    notPlaced: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["question", "rawText"],
+        required: ["text", "reason"],
         properties: {
-          question: { type: "string" },
-          rawText: { type: ["string", "null"] },
+          text: { type: "string" },
+          reason: { type: "string" },
         },
       },
     },
@@ -222,7 +226,7 @@ export async function proposeFromWalkthrough(
       .join("") ??
     "";
 
-  let parsed: { lines?: ModelLine[]; questions?: Array<{ question: string; rawText?: string | null }> };
+  let parsed: { lines?: ModelLine[]; notPlaced?: Array<{ text: string; reason?: string | null }> };
   try {
     parsed = JSON.parse(raw) as typeof parsed;
   } catch {
@@ -240,8 +244,8 @@ export async function proposeFromWalkthrough(
   };
 
   // proposeLines() is the gate. Anything the model got wrong — a hallucinated itemId, a
-  // non-positive quantity, a missing reason — is refused there and becomes a question, using
-  // exactly the same code path the MCP tool goes through.
+  // non-positive quantity, a missing reason — is refused there (a hallucinated itemId comes back as
+  // not placed), using exactly the same code path the MCP tool goes through.
   const result = await proposeLines(
     prisma,
     draftId,
@@ -253,7 +257,7 @@ export async function proposeFromWalkthrough(
       location: l.location ?? null,
       reasoning: l.reasoning,
     })),
-    (parsed.questions ?? []).map((q) => ({ question: q.question, rawText: q.rawText ?? null })),
+    (parsed.notPlaced ?? []).map((n) => ({ text: n.text, reason: n.reason ?? null })),
     MODEL_ACTOR,
   );
 
@@ -300,7 +304,8 @@ export async function proposeWalkthroughForDraft(
     return {
       path: outcome.path,
       proposed: outcome.result.proposed,
-      questions: outcome.result.questions,
+      notPlaced: outcome.result.notPlaced,
+      questions: [], // always empty; a pre-deploy bundle reads `.questions.length` (Kyle, 2026-11-28)
       rejected: outcome.result.rejected,
       usage: outcome.usage,
     };
@@ -312,6 +317,7 @@ export async function proposeWalkthroughForDraft(
       path: "basic",
       degradedReason: err.message,
       proposed: [],
+      notPlaced: [],
       questions: [],
       rejected: [],
       usage: null,

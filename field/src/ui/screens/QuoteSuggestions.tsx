@@ -1,18 +1,20 @@
 /**
- * The field Quote screen's AI-suggested lines, open questions and walkthrough list
+ * The field Quote screen's AI-suggested lines and walkthrough list
  * (2026-10-08, one-estimating-system plan, Phase 2 unit D). NOT Savannah: these are the office's
- * Walkthrough tab ("Build the draft (AI)", "Basic match only") and its Review tab's "AI proposals"
- * and "Open questions", on a phone.
+ * Walkthrough tab ("Build the draft (AI)", "Basic match only") and its Review tab's "AI proposals",
+ * on a phone.
  *
  * Kyle, 2026-10-08: the office and the truck are ONE estimating system. A draft the office built
- * from a walkthrough carries suggested lines and questions that BLOCK ISSUE until a person decides
- * each one; before this the truck could see them (greyed, no controls) and could not clear them, so
- * the quote could not be issued from the driveway. Each control below is the phone's twin of one in
+ * from a walkthrough carries suggested lines that BLOCK ISSUE until a person decides each one; before
+ * this the truck could see them (greyed, no controls) and could not clear them, so the quote could
+ * not be issued from the driveway. Each control below is the phone's twin of one in
  * PriceBookIntakePage.tsx, worded the same, calling the same server function:
  *
  *   AI proposals — N waiting on you    [Confirm | Edit & confirm] [Reject]   ProposedLineRow
- *   Open questions — N                 "Answer / what you did" [Resolve]      QuestionRow
  *   Walk the job — list what you need  [Build the draft (AI)] [Basic match only]   WalkthroughTab
+ *
+ * Kyle, 2026-11-28: no more AI "Open questions" ("I already confirmed the line item once"). What the
+ * model could not place is one "Couldn't place: ..." note under the AI result - nothing to answer.
  *
  * A suggested line is NOT PRICED and sits in no total, so there is no money on these sections and no
  * arithmetic. Hours, labour dollars, rates and Red Cedar's costs never reach this file's data
@@ -27,8 +29,9 @@
 import { useEffect, useState } from 'react'
 import type { QuoteLine } from '../../lib/crmSync'
 import type { EstimateOptionLetter } from '../../../../shared/estimateOptions'
+import { notPlacedNote } from '../../../../shared/suggestedLines'
 import type {
-  FieldOpenQuestion,
+  NotPlacedScope,
   QuoteSuggestedLine,
   FieldWalkthroughCandidate,
   FieldWalkthroughRow,
@@ -41,7 +44,6 @@ import {
   confirmButtonLabel,
   confirmEdits,
   proposalsHeading,
-  questionsHeading,
   suggestionQuantityProblem,
   unmatchedText,
   walkthroughLineNote,
@@ -167,68 +169,6 @@ export function SuggestedLinesPanel(props: {
   )
 }
 
-// ─── Open questions ──────────────────────────────────────────────────────────
-
-function QuestionCard(props: {
-  question: FieldOpenQuestion
-  busy: boolean
-  lockedReason: string | null
-  onResolve: (questionId: string, note: string) => Promise<void>
-}) {
-  const { question, busy, lockedReason, onResolve } = props
-  const [note, setNote] = useState('')
-  const [working, setWorking] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const off = busy || working || Boolean(lockedReason)
-  return (
-    <div className="space-y-2 rounded-lg border-l-4 border-amber-400 bg-slate-800 p-3">
-      <p className="text-sm text-white">{question.question}</p>
-      <p className="text-[11px] text-slate-400">raised by {question.raisedBy}</p>
-      <div className="flex gap-2">
-        <input
-          className="min-h-[2.75rem] flex-1 rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white disabled:opacity-50"
-          placeholder="Answer / what you did"
-          value={note}
-          disabled={off}
-          title={lockedReason ?? undefined}
-          onChange={(e) => setNote(e.target.value)}
-        />
-        <button
-          type="button"
-          disabled={off || !note.trim()}
-          title={lockedReason ?? (!note.trim() ? 'Write what you did or found out first' : undefined)}
-          onClick={async () => {
-            setWorking(true)
-            setError(null)
-            try { await onResolve(question.id, note.trim()) } catch (e) { setError(errText(e)) } finally { setWorking(false) }
-          }}
-          className="min-h-[2.75rem] rounded-lg border border-slate-500 px-4 text-sm font-medium text-slate-100 disabled:opacity-50"
-        >
-          {working ? 'Working…' : 'Resolve'}
-        </button>
-      </div>
-      {error && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{error}</p>}
-    </div>
-  )
-}
-
-/** "Open questions — N": what the model could not place. Renders nothing when empty. */
-export function OpenQuestionsPanel(props: {
-  questions: FieldOpenQuestion[]
-  busy: boolean
-  lockedReason: string | null
-  onResolve: (questionId: string, note: string) => Promise<void>
-}) {
-  const { questions, ...rest } = props
-  if (questions.length === 0) return null
-  return (
-    <section className="space-y-2" aria-label="Open questions">
-      <h2 className="text-sm font-semibold text-white">{questionsHeading(questions.length)}</h2>
-      {questions.map((q) => <QuestionCard key={q.id} question={q} {...rest} />)}
-    </section>
-  )
-}
-
 // ─── Walk the job — list what you need ───────────────────────────────────────
 
 export function WalkthroughRowCard(props: {
@@ -299,6 +239,23 @@ export function WalkthroughRowCard(props: {
 }
 
 /**
+ * What came back from "Build the draft (AI)": how many lines were proposed and, when the model could not
+ * place something, ONE "Couldn't place: ..." note. A note to read - nothing to answer, nothing stored and
+ * nothing waits on it (Kyle, 2026-11-28).
+ */
+export function AiBuildSummary(props: { summary: { proposed: number; notPlaced: NotPlacedScope[]; rejected: number } }) {
+  const { summary } = props
+  const note = notPlacedNote(summary.notPlaced)
+  return (
+    <div className="rounded bg-slate-900 p-2 text-xs text-slate-200">
+      <p className="font-medium">{aiSummaryText(summary.proposed, summary.rejected)}</p>
+      {note && <p className="mt-1 text-amber-200">{note}</p>}
+      <p className="mt-1 text-slate-400">Confirm, edit or drop each one under “AI proposals”. Nothing counts until you do.</p>
+    </div>
+  )
+}
+
+/**
  * The office's Walkthrough tab, on the phone. Closed it is one button; open it is the textarea, the
  * two buttons and what came back. "Build the draft (AI)" puts suggestions under "AI proposals" above;
  * "Basic match only" lists candidates here and NOTHING is added until the tech taps "+ Add to quote".
@@ -322,7 +279,7 @@ export function WalkthroughList(props: {
   const [working, setWorking] = useState<'ai' | 'basic' | null>(null)
   const [path, setPath] = useState<'ai' | 'basic' | null>(null)
   const [degraded, setDegraded] = useState<string | null>(null)
-  const [summary, setSummary] = useState<{ proposed: number; questions: number; rejected: number } | null>(null)
+  const [summary, setSummary] = useState<{ proposed: number; notPlaced: NotPlacedScope[]; rejected: number } | null>(null)
   const [rows, setRows] = useState<FieldWalkthroughRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -363,9 +320,8 @@ export function WalkthroughList(props: {
       setDegraded(r.degradedReason ?? null)
       if (r.path === 'ai') {
         setRows(null)
-        setSummary({ proposed: r.proposed.length, questions: r.questions.length, rejected: r.rejected.length })
-        // Suggestions and questions now sit on the quote (onPropose refreshed it) — they show under
-        // "AI proposals" / "Open questions" above.
+        setSummary({ proposed: r.proposed.length, notPlaced: r.notPlaced, rejected: r.rejected.length })
+        // Suggestions now sit on the quote (onPropose refreshed it) — they show under "AI proposals" above.
         setWorking(null)
       } else {
         // The model could not run, so the draft was not touched: the tech still gets candidates.
@@ -438,12 +394,7 @@ export function WalkthroughList(props: {
       </p>
       {error && <p className="rounded bg-red-950/60 p-2 text-xs text-red-200">{error}</p>}
 
-      {summary && (
-        <div className="rounded bg-slate-900 p-2 text-xs text-slate-200">
-          <p className="font-medium">{aiSummaryText(summary.proposed, summary.questions, summary.rejected)}</p>
-          <p className="mt-1 text-slate-400">Confirm, edit or drop each one under “AI proposals” and “Open questions”. Nothing counts until you do.</p>
-        </div>
-      )}
+      {summary && <AiBuildSummary summary={summary} />}
 
       {rows?.map((row, i) => (
         <WalkthroughRowCard

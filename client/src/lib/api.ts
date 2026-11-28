@@ -116,6 +116,7 @@ import type {
 import type { DraftOptionSet } from "../../../shared/estimateOptions";
 import type { FinancingPlan } from "../../../shared/financing";
 import type { QuoteRange } from "../../../shared/quoteMoney";
+import type { NotPlacedScope } from "../../../shared/suggestedLines";
 import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView, ReceiptReportOption } from "../../../shared/jobCompletion";
 import type {
   ApprovalsResponse, AuditResponse, GroupChoices, HubBadge, ThreadDetail, ThreadsResponse, TimelineResponse,
@@ -2067,7 +2068,8 @@ export const api = {
       path: "ai" | "basic";
       degradedReason?: string;
       proposed: Array<{ id: string; itemId: string; quantity: number; description: string | null }>;
-      questions: Array<{ id: string; question: string }>;
+      /** Scope the model could not place: a note to read, nothing stored (Kyle, 2026-11-28). */
+      notPlaced: NotPlacedScope[];
       rejected: Array<{ itemId: string; reason: string }>;
       usage: { model: string; inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; elapsedMs: number } | null;
     }>(`/price-book/drafts/${draftId}/propose`, { method: "POST", body: JSON.stringify({ text }) }),
@@ -2181,22 +2183,13 @@ export const api = {
   pbRejectLine: (lineId: string) =>
     request<void>(`/price-book/lines/${lineId}/reject`, { method: "POST" }),
 
-  pbResolveQuestion: (questionId: string, resolutionNote: string) =>
-    request<{ ok: boolean; question: PbQuestion }>(`/price-book/questions/${questionId}/resolve`, {
-      method: "POST",
-      body: JSON.stringify({ resolutionNote }),
-    }),
-
   /**
    * Raise a question by hand.
    *
-   * NO LONGER CALLED FROM THE WALKTHROUGH (P031). Kyle, 2026-08-18: "Get rid of the log as
-   * question completely" — a screen that showed a correct match and then offered only to file it
-   * as a question was making the wrong action the easy one. Walkthrough rows now add to the quote.
-   *
-   * Kept because the AI proposer still raises questions for scope it genuinely cannot place, and
-   * `QuestionRow` still resolves those. That is a different mechanism with its own ruling (P011:
-   * an item the model cannot place becomes a question, never a guessed atomic).
+   * NO LONGER CALLED FROM ANY SCREEN. Kyle, 2026-08-18 (P031): "Get rid of the log as question
+   * completely"; Kyle, 2026-11-28: "I dont want these questions as I already confirmed the line
+   * item once" - the AI proposer no longer raises them either, and Review has no "Open questions"
+   * panel. The server route is left in place; a question it records blocks nothing and shows nowhere.
    */
   pbAddQuestion: (draftId: string, question: string, rawText?: string | null) =>
     request<PbQuestion>(`/price-book/drafts/${draftId}/questions`, {

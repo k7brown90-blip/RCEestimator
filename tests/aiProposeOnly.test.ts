@@ -30,10 +30,13 @@ describe("proposed lines price nothing", () => {
     expect(propose.slice(0, propose.indexOf("export async function confirmProposedLine"))).toContain('state: "PROPOSED"');
   });
 
-  it("finalize refuses while any line is unconfirmed or any question is open", () => {
+  // Kyle, 2026-11-28: this used to also pin "or any question is open" (`resolvedAt: null` in
+  // finalizeDraft). Questions no longer block issue; an unconfirmed line still does.
+  it("finalize refuses while any line is unconfirmed, and no longer reads questions", () => {
     const fin = service.slice(service.indexOf("export async function finalizeDraft"));
     expect(fin).toContain('state: "PROPOSED"');
-    expect(fin).toContain("resolvedAt: null");
+    expect(fin).not.toContain("resolvedAt: null");
+    expect(fin).not.toContain("priceBookDraftQuestion");
     expect(fin).toMatch(/finalized: false/);
   });
 });
@@ -45,7 +48,9 @@ describe("schema defaults fail closed", () => {
     expect(schema).toMatch(/state\s+PriceBookLineState\s+@default\(PROPOSED\)/);
   });
 
-  it("an unmatched item has somewhere to go that is not a line", () => {
+  // The AI no longer writes questions (Kyle, 2026-11-28), but the table stays: rows already on drafts are
+  // kept (nothing is deleted) and the hand-raise route still writes to it.
+  it("the question table is kept for rows already on drafts", () => {
     expect(schema).toContain("model PriceBookDraftQuestion");
   });
 });

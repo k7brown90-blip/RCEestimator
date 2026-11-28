@@ -39,8 +39,7 @@ function review(draft: PbDraft): PbReview {
     },
     proposedLines: [],
     confirmedLines: [],
-    openQuestions: [],
-    counts: { proposed: 0, confirmed: 0, openQuestions: 0 },
+    counts: { proposed: 0, confirmed: 0 },
   };
 }
 

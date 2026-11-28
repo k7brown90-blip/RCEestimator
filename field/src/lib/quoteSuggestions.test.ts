@@ -1,6 +1,6 @@
 /**
- * The words and small rules behind the field Quote screen's AI proposals, open questions and
- * walkthrough list (2026-10-08, one-estimating-system plan, Phase 2, unit D).
+ * The words and small rules behind the field Quote screen's AI proposals and walkthrough list
+ * (2026-10-08, one-estimating-system plan, Phase 2, unit D). Open questions are gone (Kyle, 2026-11-28).
  */
 
 import { describe, expect, it } from 'vitest'
@@ -10,7 +10,6 @@ import {
   confirmEdits,
   issueDisabledReason,
   proposalsHeading,
-  questionsHeading,
   suggestedPointer,
   suggestionQuantityProblem,
   unmatchedText,
@@ -18,12 +17,11 @@ import {
   walkthroughLines,
   walkthroughPathBadge,
 } from './quoteSuggestions'
-import { unreviewedReasons } from '../../../shared/suggestedLines'
+import { notPlacedNote, unreviewedReasons } from '../../../shared/suggestedLines'
 
 describe('headings: the office\'s own words', () => {
-  it('AI proposals — N waiting on you / Open questions — N', () => {
+  it('AI proposals — N waiting on you (and no "Open questions" heading any more)', () => {
     expect(proposalsHeading(3)).toBe('AI proposals — 3 waiting on you')
-    expect(questionsHeading(2)).toBe('Open questions — 2')
   })
 })
 
@@ -76,8 +74,17 @@ describe('the walkthrough list', () => {
   })
 
   it('summarises an AI build the way the office does', () => {
-    expect(aiSummaryText(3, 1, 0)).toBe('3 line(s) proposed · 1 question(s)')
-    expect(aiSummaryText(3, 1, 2)).toBe('3 line(s) proposed · 1 question(s) · 2 refused')
+    // Kyle, 2026-11-28: no question count - what could not be placed is a separate note.
+    expect(aiSummaryText(3, 0)).toBe('3 line(s) proposed')
+    expect(aiSummaryText(3, 2)).toBe('3 line(s) proposed · 2 refused')
+  })
+
+  it("what the model could not place is one 'Couldn't place' note, and nothing when all was placed", () => {
+    expect(notPlacedNote([])).toBeNull()
+    expect(notPlacedNote([
+      { text: 'weird outdoor plug by the pool', reason: 'nothing in the price book fits' },
+      { text: 'a 4-inch junction box', reason: '' },
+    ])).toBe("Couldn't place: weird outdoor plug by the pool (nothing in the price book fits); a 4-inch junction box - add them by hand if needed.")
   })
 
   it('an unmatched row says which word the book does not know, and where to look instead', () => {
@@ -100,16 +107,21 @@ describe('issueDisabledReason: the Issue button explains itself BEFORE the press
   const SIGNED = 'Estimate 2026-1098 from this draft is SIGNED. A signed agreement is never edited — raise a change order instead.'
 
   it('is open (null) when nothing is waiting and the lifecycle allows it', () => {
-    expect(issueDisabledReason(null, 0, 0)).toBeNull()
+    expect(issueDisabledReason(null, 0)).toBeNull()
   })
 
-  it("waiting suggestions and questions block it, in the server's own sentences", () => {
-    expect(issueDisabledReason(null, 2, 1)).toBe(unreviewedReasons(2, 1).join(' '))
-    expect(issueDisabledReason(null, 1, 0)).toContain('under "AI proposals" tap Confirm')
-    expect(issueDisabledReason(null, 0, 1)).toContain('under "Open questions"')
+  it("waiting suggestions block it, in the server's own sentence", () => {
+    expect(issueDisabledReason(null, 2)).toBe(unreviewedReasons(2).join(' '))
+    expect(issueDisabledReason(null, 1)).toContain('under "AI proposals" tap Confirm')
+  })
+
+  it('an old open question never greys it: the sentence has no question in it and nothing here takes one (Kyle, 2026-11-28)', () => {
+    expect(issueDisabledReason(null, 0)).toBeNull()
+    expect(unreviewedReasons(0)).toEqual([])
+    expect(unreviewedReasons(2).join(' ')).not.toMatch(/question/i)
   })
 
   it("the lifecycle's own reason (signed, lost, nothing changed) wins", () => {
-    expect(issueDisabledReason(SIGNED, 2, 1)).toBe(SIGNED)
+    expect(issueDisabledReason(SIGNED, 2)).toBe(SIGNED)
   })
 })

@@ -198,7 +198,7 @@ describe("the browse API and the intake API are one read path", () => {
 });
 
 describe("candidate matching proposes only price-book codes", () => {
-  it("accepts a price-book code and rejects a legacy code into a question", async () => {
+  it("accepts a price-book code and rejects a legacy code as not placed", async () => {
     const result = await proposeLines(
       prisma,
       draftId!,
@@ -213,8 +213,10 @@ describe("candidate matching proposes only price-book codes", () => {
     expect(result.proposed.map((p) => p.itemId)).toEqual([PB_CODE]);
     expect(result.rejected.map((r) => r.itemId)).toEqual([LEGACY_CODE]);
     expect(result.rejected[0].reason).toContain("not in PriceBookAtomic");
-    // Rejected is not silently dropped — it becomes a question for the tech.
-    expect(result.questions.some((q) => q.question.includes(LEGACY_CODE))).toBe(true);
+    // Rejected is not silently dropped - it comes back as a "not placed" note for the tech to read.
+    // (Kyle, 2026-11-28: no more question rows - "I already confirmed the line item once".)
+    expect(result.notPlaced.some((n) => n.reason.includes(LEGACY_CODE))).toBe(true);
+    expect(await prisma.priceBookDraftQuestion.count({ where: { draftId: draftId! } })).toBe(0);
 
     const lines = await prisma.priceBookDraftLine.findMany({ where: { draftId: draftId! } });
     expect(lines.map((l) => l.itemId)).toEqual([PB_CODE]);

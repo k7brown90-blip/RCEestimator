@@ -41,7 +41,7 @@ import { isAssemblyRowType } from "./priceBookAssembly";
 import type {
   CatalogSection, FieldCatalogPage, FieldCatalogRow, FieldCatalogSnapshot, FieldCatalogSnapshotResponse,
 } from "../../shared/quoteCatalog";
-import { unreviewedReasons, type FieldOpenQuestion, type QuoteSuggestedLine } from "../../shared/suggestedLines";
+import { unreviewedReasons, type NotPlacedScope, type QuoteSuggestedLine } from "../../shared/suggestedLines";
 import { COPY_REFUSED_CHANGE_ORDER, COPY_REFUSED_DIAGNOSTIC } from "../../shared/draftLifecycle";
 import { BALLPARK_ON_LEAD_REASON, isBallparkOnLead } from "../../shared/leadBallpark";
 import { logSystemEvent } from "./systemEvents";
@@ -1678,9 +1678,9 @@ function lineOrderUpdates(
 }
 
 /**
- * Raise a question by hand — where an unresolved walkthrough row lands. A line the system cannot
- * match must become a visible question, never dropped text. An open question blocks issue
- * (finalizeDraft), which is why it is a draft mutation and carries the signed-draft guard.
+ * Raise a question by hand (POST /price-book/drafts/:draftId/questions - no screen calls it). It is a
+ * draft mutation and carries the signed-draft guard. A question no longer blocks issue and no screen
+ * lists it (Kyle, 2026-11-28) - the row is only a record.
  */
 export async function raiseQuestion(
   prisma: PrismaClient,
@@ -2175,7 +2175,12 @@ export interface ProposedLineInput {
 
 export interface ProposeResult {
   proposed: Array<{ id: string; itemId: string; quantity: number; description: string | null }>;
-  questions: Array<{ id: string; question: string }>;
+  /**
+   * Scope the model could not place on a catalog item: an itemId that is not in the price book, or
+   * scope it reported as unplaceable. A note for the person to read - NO database row, nothing blocks
+   * on it (Kyle, 2026-11-28: "I dont want these questions as I already confirmed the line item once").
+   */
+  notPlaced: NotPlacedScope[];
   rejected: Array<{ itemId: string; reason: string }>;
 }
 
@@ -2183,45 +2188,41 @@ export interface ProposeResult {
  * The model's single write path.
  *
  * Every line lands `PROPOSED` and contributes nothing to any total. Anything the model names
- * that is not a real atomic does NOT become a line — it becomes an open question on the draft,
- * because "never make up a number" applies to scope as much as to price: an unmatched item is a
- * question for the tech, not a nearest-guess atomic.
+ * that is not a real atomic does NOT become a line and is never a nearest-guess atomic ("never make
+ * up a number" applies to scope as much as to price). Since Kyle, 2026-11-28 it also does NOT become a
+ * question row: it comes back in `notPlaced`, a note the screen prints ("Couldn't place: ..."), and
+ * nothing is written for it and nothing waits on it.
+ *
+ * `unplaced` is the scope the model itself reported it could not place (aiProposer's `notPlaced`).
  */
 export async function proposeLines(
   prisma: PrismaClient,
   draftId: string,
   lines: ProposedLineInput[],
-  unmatched: Array<{ question: string; rawText?: string | null }>,
+  unplaced: Array<{ text: string; reason?: string | null }>,
   proposedBy: string
 ): Promise<ProposeResult> {
   const draft = await prisma.priceBookDraftEstimate.findUnique({ where: { id: draftId } });
   if (!draft) throw new Error(`Draft ${draftId} not found.`);
   await reopenForEditIfUnsigned(prisma, draftId, "AI proposal");
 
-  const result: ProposeResult = { proposed: [], questions: [], rejected: [] };
+  const result: ProposeResult = { proposed: [], notPlaced: [], rejected: [] };
   // max + 1, not a row count: a count collides with existing numbers after a delete or a
   // drag-and-drop renumber and drops new proposals into the middle of the list (2026-10-08).
   let sortOrder = await nextSortOrder(prisma, draftId);
 
   for (const line of lines) {
-    // Unknown code → a question, never a nearest match. The model does not get to invent
+    // Unknown code -> not placed, never a nearest match. The model does not get to invent
     // catalog rows, and a fuzzy "closest atomic" is exactly the assumption the atomic-first
-    // ruling removes.
+    // ruling removes. It is a note in the result, not a question row (Kyle, 2026-11-28).
     const atomic = await prisma.priceBookAtomic.findFirst({
       where: { itemId: line.itemId, retiredAt: null },
     });
     if (!atomic) {
-      const q = await prisma.priceBookDraftQuestion.create({
-        data: {
-          draftId,
-          question:
-            `Proposed item "${line.itemId}" is not in the price book. Reason given: ` +
-            `${line.reasoning}. A human needs to pick the right atomic or add one to the workbook.`,
-          rawText: line.reasoning,
-          raisedBy: proposedBy,
-        },
+      result.notPlaced.push({
+        text: (line.reasoning ?? "").trim() || line.itemId,
+        reason: `"${line.itemId}" is not in the price book`,
       });
-      result.questions.push({ id: q.id, question: q.question });
       result.rejected.push({ itemId: line.itemId, reason: "not in PriceBookAtomic" });
       continue;
     }
@@ -2272,16 +2273,11 @@ export async function proposeLines(
     });
   }
 
-  for (const u of unmatched) {
-    const q = await prisma.priceBookDraftQuestion.create({
-      data: {
-        draftId,
-        question: u.question,
-        rawText: u.rawText ?? null,
-        raisedBy: proposedBy,
-      },
-    });
-    result.questions.push({ id: q.id, question: q.question });
+  // Scope the model reported it could not place: carried through as a note. Nothing is written.
+  for (const u of unplaced) {
+    const text = (u.text ?? "").trim();
+    if (!text) continue;
+    result.notPlaced.push({ text, reason: (u.reason ?? "").trim() });
   }
 
   return result;
@@ -2417,25 +2413,20 @@ export async function resolveQuestion(
 }
 
 /**
- * What the field Quote screen lists under "AI proposals" and "Open questions" (Phase 2 unit D) —
- * the same two lists `getDraftReview` hands the CRM, shaped for the phone (shared/suggestedLines.ts).
- * Item names come from the book; a code the book no longer has falls back to the code itself.
+ * What the field Quote screen lists under "AI proposals" (Phase 2 unit D) - the same list
+ * `getDraftReview` hands the CRM, shaped for the phone (shared/suggestedLines.ts). Item names come
+ * from the book; a code the book no longer has falls back to the code itself. There is no "Open
+ * questions" list any more (Kyle, 2026-11-28); question rows already on a draft are never read here.
  */
 export async function getDraftSuggestions(
   prisma: PrismaClient,
   draftId: string,
-): Promise<{ suggestedLines: QuoteSuggestedLine[]; openQuestions: FieldOpenQuestion[] }> {
-  const [lines, questions] = await Promise.all([
-    prisma.priceBookDraftLine.findMany({
-      where: { draftId, state: "PROPOSED" },
-      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-      include: { atomic: { select: { description: true } } },
-    }),
-    prisma.priceBookDraftQuestion.findMany({
-      where: { draftId, resolvedAt: null },
-      orderBy: { createdAt: "asc" },
-    }),
-  ]);
+): Promise<{ suggestedLines: QuoteSuggestedLine[] }> {
+  const lines = await prisma.priceBookDraftLine.findMany({
+    where: { draftId, state: "PROPOSED" },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    include: { atomic: { select: { description: true } } },
+  });
   return {
     suggestedLines: lines.map((l) => ({
       id: l.id,
@@ -2447,7 +2438,6 @@ export async function getDraftSuggestions(
       reasoning: l.proposalReasoning,
       proposedBy: l.proposedBy,
     })),
-    openQuestions: questions.map((q) => ({ id: q.id, question: q.question, rawText: q.rawText, raisedBy: q.raisedBy })),
   };
 }
 
@@ -2457,7 +2447,6 @@ export async function getDraftReview(prisma: PrismaClient, draftId: string) {
     where: { id: draftId },
     include: {
       lines: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }], include: { atomic: true } },
-      questions: { orderBy: { createdAt: "asc" } },
     },
   });
   if (!draft) throw new Error(`Draft ${draftId} not found.`);
@@ -2467,7 +2456,6 @@ export async function getDraftReview(prisma: PrismaClient, draftId: string) {
     optionSet: await getDraftOptionSet(prisma, draftId),
     proposedLines: draft.lines.filter((l) => l.state === "PROPOSED"),
     confirmedLines: draft.lines.filter((l) => l.state === "CONFIRMED"),
-    openQuestions: draft.questions.filter((q) => q.resolvedAt === null),
   };
 }
 
@@ -2543,9 +2531,8 @@ export async function finalizeDraft(
   const unconfirmed = await prisma.priceBookDraftLine.count({
     where: { draftId, state: "PROPOSED" },
   });
-  const openQuestions = await prisma.priceBookDraftQuestion.count({
-    where: { draftId, resolvedAt: null },
-  });
+  // Open questions do NOT block (Kyle, 2026-11-28: "I already confirmed the line item once"). Question
+  // rows still sitting on old drafts are simply not read here - nothing is deleted, nothing waits.
 
   const result = finalizeEstimate(computed, atomics, {
     context,
@@ -2553,10 +2540,10 @@ export async function finalizeDraft(
     provisionalReason: rate.provisionalReason,
   });
 
-  if (unconfirmed > 0 || openQuestions > 0) {
+  if (unconfirmed > 0) {
     // ONE wording for both doors, and for the field screen's greyed Issue button before the press
-    // (shared/suggestedLines.ts) — it names the heading and the button that clears each list.
-    const reasons = unreviewedReasons(unconfirmed, openQuestions);
+    // (shared/suggestedLines.ts) - it names the heading and the buttons that clear the list.
+    const reasons = unreviewedReasons(unconfirmed);
     return {
       finalized: false,
       reasons: [...reasons, ...(result.finalized ? [] : result.reasons)],
