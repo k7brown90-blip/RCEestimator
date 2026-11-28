@@ -97,3 +97,24 @@ describe("PropertyEstimates - one card per estimate number", () => {
     expect(screen.queryByText(/^Earlier revisions/)).not.toBeInTheDocument();
   });
 });
+
+/*
+  Kyle, 2026-11-27 (debug report on a signed estimate's card): "She signed but all I get is the open and
+  view. I cannot get to a place to process payment." A signed, live card carries "Invoice & payment",
+  which opens the same invoice drawer and Take payment card the estimate drawer's button opens.
+*/
+describe("PropertyEstimates - a signed estimate's card opens Invoice & payment", () => {
+  it("a signed card has the button; unsigned, void and lost cards do not", async () => {
+    vi.spyOn(api, "accountEstimates").mockResolvedValue({
+      estimates: [
+        row({ id: "est-s", number: "2026-9101", status: "signed", signedAt: "2026-11-27T13:00:00.000Z", signerName: "Test Signer" }),
+        row({ id: "est-u", number: "2026-9102", status: "sent", sentAt: "2026-11-27T13:00:00.000Z" }),
+        row({ id: "est-v", number: "2026-9103", status: "void", signedAt: "2026-11-27T13:00:00.000Z" }),
+        row({ id: "est-l", number: "2026-9104", status: "lost", signedAt: "2026-11-27T13:00:00.000Z" }),
+      ],
+    });
+    renderWithProviders(<PropertyEstimates accountId="acct-1" propertyId="prop-1" />);
+    expect(await screen.findByText(/2026-9101/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Invoice & payment" })).toHaveLength(1);
+  });
+});

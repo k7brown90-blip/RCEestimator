@@ -1529,6 +1529,11 @@ export async function adoptSupersededInvoice(
   return { replaced: replaced.map((r) => ({ id: r.id, number: r.number, revision: r.revision })), changeOrders: changeOrders.count, payments: payments.count, jobVisitId };
 }
 
+/** The events a save or a send leaves on an estimate - what `reviseEstimate`'s skipIfEventsExceed counts. */
+export const SAVE_OR_SEND_EVENT_TYPES = ["updated", "send_started", "sent"];
+/** `reviseEstimate`'s answer when skipIfEventsExceed found the estimate already saved or sent by someone else. */
+export const ALREADY_SAVED_REASON = "This estimate was saved or sent by someone else a moment ago.";
+
 /**
  * Save the draft, as it stands now, onto the estimate it was issued as.
  *
@@ -1561,6 +1566,16 @@ export async function reviseEstimate(
      * signed estimate can still be revised from there.
      */
     refuseSignedWith?: string;
+    /**
+     * For the email that saves first (Kyle, 2026-11-27, review fix): the number of "updated",
+     * "send_started" and "sent" events the caller saw on this estimate BEFORE it decided there was
+     * something to save. If there are MORE under the row lock, another save or send reached this
+     * estimate first - a second save would then supersede the very row that first one just updated
+     * or emailed (the customer would get an email whose link the other request killed), so this
+     * saves nothing and returns ALREADY_SAVED_REASON; the caller sends the estimate as it now stands.
+     * The Save button never passes it.
+     */
+    skipIfEventsExceed?: number;
   } = {}
 ): Promise<GraduateResult> {
   const prev = await prisma.issuedEstimate.findUnique({
@@ -1635,6 +1650,12 @@ export async function reviseEstimate(
       });
       if (locked.supersededBy) throw new SupersedeRefused("That estimate has already been superseded by a newer revision.");
       if (opts.refuseSignedWith && locked.signedAt) throw new SupersedeRefused(opts.refuseSignedWith);
+      if (
+        opts.skipIfEventsExceed !== undefined &&
+        (await tx.issuedEstimateEvent.count({ where: { estimateId: prev.id, type: { in: SAVE_OR_SEND_EVENT_TYPES } } })) > opts.skipIfEventsExceed
+      ) {
+        throw new SupersedeRefused(ALREADY_SAVED_REASON);
+      }
       // ONE ESTIMATE, ONE LINK (Kyle, 2026-11-27): an estimate nobody outside the office has seen is
       // UPDATED IN PLACE - no new revision, no new link. Judged HERE, under the row lock and nowhere
       // earlier: a send, a customer view or a signature that committed while the fresh row was being

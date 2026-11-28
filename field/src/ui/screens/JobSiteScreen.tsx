@@ -697,6 +697,8 @@ export function JobSiteScreen({
               estimateId={panelEstimate.id}
               send={emailEstimateToCustomer}
               blockedReason={offline ? OFFLINE_EMAIL_REASON : null}
+              // The email saved the quote first and may have made a new revision: re-read the job (Kyle, 2026-11-27).
+              onSavedFirst={() => { void reloadBrief() }}
             />
           )}
           {/* And the financing link on its own, before the customer signs (Kyle, 2026-10-08). */}

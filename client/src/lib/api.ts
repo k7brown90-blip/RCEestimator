@@ -356,7 +356,28 @@ export interface CustomerEmailSent {
   amount?: number;
   /** invoice: it went out in the reminder voice (and stamped the reminder clock). */
   reminder?: boolean;
+  /**
+   * estimate: which estimate the email was FOR. When the send saved the draft first (`savedFirst`,
+   * Kyle 2026-11-27 "email sends what is on screen") that can be a NEW revision, so a screen
+   * re-points at `estimateId`; `replacedInPlace` says the save kept the same row and link.
+   */
+  estimateId?: string;
+  number?: string;
+  revision?: number;
+  savedFirst?: boolean;
+  replacedInPlace?: boolean;
 }
+
+/**
+ * What a host's `onSent` hears about the estimate an email was for (CustomerEmailSent's estimate fields).
+ * `message` is the line the panel itself showed ("Saved your changes and emailed ..."), and `failed` says
+ * it is the refusal of a send that saved and then did not go. A host that RE-POINTS at another estimate
+ * (a new revision) loses the panel's own line with the remount, so it shows `message` itself.
+ */
+export type EmailSentInfo = Pick<CustomerEmailSent, "estimateId" | "number" | "revision" | "savedFirst" | "replacedInPlace"> & {
+  message?: string;
+  failed?: boolean;
+};
 
 export interface PaymentInfo {
   /** The ROOT invoice (2026-09-20) — a change order's money answers about the invoice it joined. */

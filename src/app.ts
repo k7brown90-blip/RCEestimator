@@ -2641,7 +2641,9 @@ app.get("/issued-estimates/:id", asyncHandler(async (req, res) => {
 app.post("/customer-emails", asyncHandler(async (req, res) => {
   const result = await sendCustomerEmailRequest(prisma, req.body, "human:crm-session");
   if (!result.ok) {
-    res.status(400).json({ sent: false, error: result.reason });
+    // saved (estimate only): the send saved the draft first and then the email did not go - the
+    // screen re-points at the estimate that save left (Kyle, 2026-11-27, email sends what is on screen).
+    res.status(400).json({ sent: false, error: result.reason, ...(result.saved ? { saved: result.saved } : {}) });
     return;
   }
   res.json({ sent: true, ...result });

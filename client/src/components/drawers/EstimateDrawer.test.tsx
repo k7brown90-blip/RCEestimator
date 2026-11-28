@@ -454,3 +454,53 @@ describe("EstimateDrawer — the ONE email control (Estimate · Financing link �
     expect(await screen.findByText(/superseded by a newer revision/)).toBeInTheDocument();
   });
 });
+
+/*
+ * EMAIL SENDS WHAT IS ON SCREEN (Kyle, 2026-11-27), review fix: when the email saved the draft as a
+ * NEW revision the drawer re-points at it, and DrawerHost remounts the drawer (it is keyed by estimate
+ * id) - which used to wipe the panel's "Saved your changes and emailed ..." line, and with it the
+ * refusal of a send that saved and then did not go. The line has to still be on screen AFTER the
+ * re-point, in the drawer that is now showing the new revision.
+ */
+describe("EstimateDrawer - an email that saved the draft as a new revision", () => {
+  const savedRevision = { estimateId: "est-2", number: "EST-2026-0001", revision: 2, replacedInPlace: false };
+  const records = () =>
+    vi.spyOn(api, "estimateRecord").mockImplementation(async (id: string) => ({
+      estimate: id === "est-2" ? estimate({ id: "est-2", revision: 2, sentAt: null, sentTo: null }) : estimate({}),
+    }) as never);
+  const sendFromTheDrawer = async () => {
+    renderWithProviders(<DrawerHost />, { route: "/estimates?estimate=est-1" });
+    fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate EST-2026-0001 to jane@example.com" }));
+  };
+
+  it("shows 'Saved your changes and emailed ...' in the drawer that is now showing the new revision", async () => {
+    records();
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+    vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({
+      sent: true, kind: "estimate", to: "jane@example.com", cc: [], ...savedRevision, savedFirst: true,
+    });
+
+    await sendFromTheDrawer();
+
+    // The drawer moved to the new revision ...
+    await waitFor(() => expect(api.estimateRecord).toHaveBeenCalledWith("est-2"));
+    // ... and the sentence is still there, once, on the drawer that replaced it.
+    await waitFor(() => expect(screen.getAllByText(/^Saved your changes and emailed estimate EST-2026-0001 \(revision 2\) to jane@example\.com\./)).toHaveLength(1));
+    expect(screen.getByText(/The customer's earlier link no longer opens/)).toBeInTheDocument();
+  });
+
+  it("keeps the refusal of a send that saved and then did not go", async () => {
+    records();
+    vi.spyOn(api, "accountContacts").mockResolvedValue([]);
+    vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(Object.assign(
+      new Error("Your changes were saved to estimate EST-2026-0001 (revision 2), but the email was not sent: The email could not be sent."),
+      { body: { sent: false, saved: savedRevision } },
+    ));
+
+    await sendFromTheDrawer();
+
+    await waitFor(() => expect(api.estimateRecord).toHaveBeenCalledWith("est-2"));
+    await waitFor(() => expect(screen.getAllByText(/Your changes were saved to estimate EST-2026-0001 \(revision 2\), but the email was not sent/)).toHaveLength(1));
+  });
+});

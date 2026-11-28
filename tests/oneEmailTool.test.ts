@@ -122,7 +122,9 @@ beforeAll(async () => {
   });
   propertyId = property.id;
   await prisma.priceBookSupplier.create({ data: { id: `${MARK}-SUP`, name: `${MARK} Supply`, quotable: "YES" } });
-  draftId = (await prisma.priceBookDraftEstimate.create({ data: { title: `${MARK} draft`, supplierId: `${MARK}-SUP` } })).id;
+  // "finalized" = the draft as issued, nothing edited since: these estimates are written straight onto it, and an
+  // email now saves a draft with unsaved edits first (Kyle, 2026-11-27, "email sends what is on screen").
+  draftId = (await prisma.priceBookDraftEstimate.create({ data: { title: `${MARK} draft`, supplierId: `${MARK}-SUP`, status: "finalized" } })).id;
 });
 
 afterAll(async () => {

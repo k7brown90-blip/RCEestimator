@@ -505,6 +505,10 @@ export function PresentationPage() {
                 { kind: "financing", label: "Financing link" },
                 ...(account ? [{ kind: "message" as const, label: "Message" }] : []),
               ],
+              // The email saves unsaved edits first (Kyle, 2026-11-27); a revision it made is the one now emailed.
+              onSent: (sent) => {
+                if (sent?.savedFirst && sent.estimateId && sent.number) setEmailFor({ estimateId: sent.estimateId, number: sent.number });
+              },
             }}
           />
         </Modal>

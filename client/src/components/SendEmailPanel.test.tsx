@@ -214,3 +214,83 @@ describe("SendEmailPanel as the AI admin", () => {
     expect(await screen.findByRole("button", { name: "Send to jane@…" })).toBeInTheDocument();
   });
 });
+
+/*
+ * EMAIL SENDS WHAT IS ON SCREEN (Kyle, 2026-11-27): "When I sent that last estimate and did not click
+ * save changes to the estimate it did send but it did not save the changes to his account either."
+ * The server saves the draft first and answers with the estimate the email was FOR; the panel says so
+ * in the sentence both apps print, and tells its host which estimate to follow.
+ */
+describe("SendEmailPanel - an estimate email that saved the draft first", () => {
+  const record = (onSent?: (sent?: unknown) => void) => ({
+    estimateId: "est-1",
+    number: "2026-1160",
+    kinds: [{ kind: "estimate" as const, label: "Estimate 2026-1160" }, { kind: "message" as const, label: "Message" }],
+    onSent,
+  });
+  const quiet = () => {
+    vi.spyOn(api, "emailDeliveries").mockResolvedValue([]);
+    vi.spyOn(api, "accountContacts").mockResolvedValue([] as never);
+    vi.spyOn(api, "account").mockResolvedValue({ id: "acct-1", name: "Example", properties: [] } as never);
+  };
+  const open = () => fireEvent.click(screen.getByRole("button", { name: "Email the customer" }));
+
+  it("says 'Saved your changes and emailed' with the new revision, and hands the host the estimate it was for", async () => {
+    quiet();
+    const onSent = vi.fn();
+    vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({
+      sent: true, kind: "estimate", to: "jane@example.com", cc: [],
+      estimateId: "est-2", number: "2026-1160", revision: 2, savedFirst: true, replacedInPlace: false,
+    });
+    renderWithProviders(<SendEmailPanel target="account" id="acct-1" primaryEmail="jane@example.com" accountIdForContacts="acct-1" record={record(onSent)} />);
+
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate 2026-1160 to jane@example.com" }));
+
+    expect(await screen.findByText(/^Saved your changes and emailed estimate 2026-1160 \(revision 2\) to jane@example\.com\./)).toBeInTheDocument();
+    expect(screen.getByText(/The customer's earlier link no longer opens/)).toBeInTheDocument();
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith(expect.objectContaining({ savedFirst: true, estimateId: "est-2", revision: 2 })));
+  });
+
+  it("an update in place claims no new revision", async () => {
+    quiet();
+    vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({
+      sent: true, kind: "estimate", to: "jane@example.com", cc: [],
+      estimateId: "est-1", number: "2026-1160", revision: 1, savedFirst: true, replacedInPlace: true,
+    });
+    renderWithProviders(<SendEmailPanel target="account" id="acct-1" primaryEmail="jane@example.com" accountIdForContacts="acct-1" record={record()} />);
+
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate 2026-1160 to jane@example.com" }));
+
+    expect(await screen.findByText(/^Saved your changes and emailed estimate 2026-1160 to jane@example\.com\. It was updated where it was: same number, same customer link, no new revision\./)).toBeInTheDocument();
+    expect(screen.queryByText(/revision 1/)).not.toBeInTheDocument();
+  });
+
+  it("an ordinary send keeps its own sentence", async () => {
+    quiet();
+    vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "estimate", to: "jane@example.com", cc: [] });
+    renderWithProviders(<SendEmailPanel target="account" id="acct-1" primaryEmail="jane@example.com" accountIdForContacts="acct-1" record={record()} />);
+
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate 2026-1160 to jane@example.com" }));
+
+    expect(await screen.findByText("Estimate 2026-1160 emailed to jane@example.com.")).toBeInTheDocument();
+    expect(screen.queryByText(/Saved your changes/)).not.toBeInTheDocument();
+  });
+
+  it("a send that saved and then failed shows the refusal and still tells the host which estimate it left", async () => {
+    quiet();
+    const onSent = vi.fn();
+    vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(Object.assign(new Error("Your changes were saved to estimate 2026-1160 (revision 2), but the email was not sent: The email could not be sent."), {
+      body: { sent: false, saved: { estimateId: "est-2", number: "2026-1160", revision: 2, replacedInPlace: false } },
+    }));
+    renderWithProviders(<SendEmailPanel target="account" id="acct-1" primaryEmail="jane@example.com" accountIdForContacts="acct-1" record={record(onSent)} />);
+
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Send estimate 2026-1160 to jane@example.com" }));
+
+    expect(await screen.findByText(/Your changes were saved to estimate 2026-1160 \(revision 2\), but the email was not sent/)).toBeInTheDocument();
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith(expect.objectContaining({ savedFirst: true, estimateId: "est-2" })));
+  });
+});

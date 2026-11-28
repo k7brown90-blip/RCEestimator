@@ -30,7 +30,7 @@
  * in it (PUNCHLIST B4) — never /issued-estimates/:id, whose payload carries the customer's link.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, openProtectedPdf } from "../../lib/api";
@@ -62,8 +62,18 @@ const STATUS_TONE: Record<string, string> = {
 /** Sent, viewed or expired: out with the customer, unsigned — the only places "lost" starts from. */
 const LOSABLE = new Set(["sent", "viewed", "expired"]);
 
+/**
+ * The line "Saved your changes and emailed ..." (or the refusal of a send that saved and then did not
+ * go) for an email that made a NEW revision. The drawer is keyed by estimate id (DrawerHost), so
+ * re-pointing at the new revision unmounts this drawer, panel and all, and a fresh one opens: the old
+ * drawer leaves the line here under the NEW estimate's id and the new drawer shows it once.
+ */
+const carriedEmailLine = new Map<string, { message: string; failed: boolean }>();
+
 export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const navigate = useNavigate();
+  const [carried] = useState(() => carriedEmailLine.get(id) ?? null);
+  useEffect(() => { carriedEmailLine.delete(id); }, [id]);
   const queryClient = useQueryClient();
   const drawers = useDrawerParams();
   const { data, isLoading, error } = useEstimateRecord(id);
@@ -261,6 +271,8 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 id={e.changeOrderForId ?? e.id}
                 onOpen={drawers.open}
                 label={e.changeOrderForNumber ? `Invoice ${e.changeOrderForNumber} & payment` : "Invoice & payment"}
+                // A real button, not a chip (Kyle, 2026-11-27: "I cannot get to a place to process payment").
+                className="btn btn-primary px-3 py-1 text-sm min-h-0"
               />
             )}
             {e.jobVisitId && <OpenDrawerButton kind="job" id={e.jobVisitId} onOpen={drawers.open} label="Job" />}
@@ -562,6 +574,11 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
             estimate -> "Email the customer" -> Estimate / Financing link / Message -> To and CC ->
             "Send estimate NNNN to …".
           */}
+          {carried && (
+            <p role="status" className={`rounded p-2 text-xs ${carried.failed ? "bg-red-50 text-red-900" : "bg-emerald-50 text-emerald-800"}`}>
+              {carried.message}
+            </p>
+          )}
           <SendEmailPanel
             target="account"
             id={e.customerId}
@@ -575,7 +592,16 @@ export function EstimateDrawer({ id, onClose }: { id: string; onClose: () => voi
                 { kind: "financing", label: "Financing link", blocked: financingBlock },
                 { kind: "message", label: "Message" },
               ],
-              onSent: refresh,
+              // "Email the customer" saves unsaved edits first (Kyle, 2026-11-27: "email sends what is on
+              // screen"). When that made a new revision this drawer's estimate is superseded, so it moves
+              // to the one the email was for; the panel's own line says "Saved your changes and emailed ...".
+              onSent: (sent) => {
+                if (sent?.savedFirst && sent.estimateId && sent.estimateId !== id) {
+                  if (sent.message) carriedEmailLine.set(sent.estimateId, { message: sent.message, failed: Boolean(sent.failed) });
+                  drawers.open("estimate", sent.estimateId);
+                }
+                refresh();
+              },
             }}
           />
 

@@ -73,7 +73,28 @@ import sharp from "sharp";
 import { z } from "zod";
 import { PHOTO_OUTSIDE_JOB_REFUSAL, photoIdsOutsideJob } from "./estimatePhotos";
 
-export type SendResult = { ok: true; to: string; cc: string[] } | { ok: false; reason: string };
+/**
+ * What a send that SAVED the draft first did (Kyle, 2026-11-27, "email sends what is on screen"):
+ * the estimate the email is about NOW, which is not the one the screen asked for when the save made
+ * a revision. Every screen that sent re-points at `estimateId`.
+ */
+export interface SavedBeforeSend {
+  estimateId: string;
+  number: string;
+  revision: number;
+  /** True: updated where it was (same id, same customer link). False: a new revision, the old link is dead. */
+  replacedInPlace: boolean;
+}
+
+/**
+ * `estimateId` / `number` / `revision` say which estimate the email is for - always, because a save
+ * before the send can make a NEW revision and the screen must follow it. `savedFirst` is present
+ * (true) only when the send saved the draft first; a failure AFTER that save carries `saved`, so a
+ * screen still learns the save happened and the estimate it was asking about is now another row.
+ */
+export type SendResult =
+  | { ok: true; to: string; cc: string[]; estimateId: string; number: string; revision: number; savedFirst?: true; replacedInPlace?: boolean }
+  | { ok: false; reason: string; saved?: SavedBeforeSend };
 
 /** What the one invoice send reports: who got it, what was owed, and whether it went out as a reminder. */
 export type InvoiceSendResult =
@@ -647,10 +668,7 @@ async function financingBlockHtml(
     ${lines ? `<p style="font-size:15px;font-weight:600;margin:16px 0 4px;">Monthly payments with financing</p>${lines}` : ""}`;
 }
 
-export async function sendEstimateEmail(
-  prisma: PrismaClient,
-  estimateId: string,
-  opts: {
+export type SendEstimateEmailOptions = {
     sentBy: string;
     toOverride?: string | null;
     /** Extra visible recipients (2026-10-24). Validated, lower-cased and de-duplicated by cleanCc. */
@@ -687,7 +705,166 @@ export async function sendEstimateEmail(
      * and getFinancingPlans catches its own errors, so this still cannot fail the send.
      */
     includeFinancingLink?: boolean;
+};
+
+/**
+ * THE ONE ESTIMATE EMAIL. Sends what is ON SCREEN (Kyle, 2026-11-27): when the estimate is the live,
+ * unsigned estimate of a draft that has been edited since, the draft is SAVED first - exactly what
+ * "Save changes to the estimate" does (reviseEstimate: in place while nobody outside the office has
+ * seen it, otherwise a new revision) - and the email is built for the estimate that save leaves.
+ * Both doors reach this: the CRM's POST /customer-emails and the field's /issued-estimates/:id/email
+ * (through sendEstimateEmailFromBody), so there is no second save path and no client-side pre-save.
+ * The invoice email is a different function and is not touched.
+ *
+ * ORDER: save, THEN claim and send. The save takes the estimate's row lock itself; the claim
+ * (sendSavedEstimateEmail) takes it in its own transaction and releases it before the email is built.
+ * Neither is ever held while the other is taken, so they cannot deadlock.
+ */
+export async function sendEstimateEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: SendEstimateEmailOptions,
+): Promise<SendResult> {
+  const saved = await saveDraftBeforeSend(prisma, estimateId, opts);
+  if ("refusal" in saved) return { ok: false, reason: saved.refusal };
+  if (!saved.savedBeforeSend) return sendSavedEstimateEmail(prisma, estimateId, opts);
+
+  const did = saved.savedBeforeSend;
+  let result: SendResult;
+  try {
+    result = await sendSavedEstimateEmail(prisma, did.estimateId, opts);
+  } catch (err) {
+    // Something threw while the email was being built (a report would not render, a photo would not
+    // read). The save has already happened, so the screen must hear that too, not just a 500.
+    logSystemEvent("error", "issued-estimate", `Estimate ${did.number} was saved before its email, and the email then failed to build`, {
+      estimateId: did.estimateId, sentBy: opts.sentBy, error: err instanceof Error ? err.message : String(err),
+    });
+    result = { ok: false, reason: "The email could not be built. Try again." };
   }
+  if (result.ok) return { ...result, savedFirst: true, replacedInPlace: did.replacedInPlace };
+  // The save stands even though the email did not go (a report that could not be produced, the mail
+  // provider). Said in the refusal itself, and carried for the screen so it follows the estimate.
+  return {
+    ok: false,
+    reason: `Your changes were saved to estimate ${did.number} (${did.replacedInPlace ? "updated where it was" : `revision ${did.revision}`}), but the email was not sent: ${result.reason}`,
+    saved: did,
+  };
+}
+
+/**
+ * Save the draft before its estimate is emailed, when that is what "send what is on screen" needs.
+ *
+ * Only for the estimate that IS the live estimate of its draft, while the draft has unsaved edits
+ * (getDraftLifecycle.hasUnsavedChanges - the same word the Save button is greyed or lit by), and only
+ * while it is neither signed nor accepted by the office. Everything else is left to the send as it
+ * always was: an older revision, a superseded or void or archived one (the send refuses them in its
+ * own words), a signed or accepted one, an estimate that is current on its draft.
+ *
+ * `{ savedBeforeSend: null }` = nothing to save, send as it stands. `{ refusal }` = refuse the email
+ * and send nothing: the save was refused (lost, ...) or the recipients are not valid - checked HERE
+ * first so an email that cannot go never makes a revision behind the customer's link.
+ *
+ * "Nothing changed" is not a refusal. The draft reopens on ANY edit, and reviseEstimate saves
+ * whatever is there (the Save button's greying for an unchanged draft is the screens', not the
+ * service's), so a draft that is reopened and unchanged is saved like any other and the email goes.
+ */
+async function saveDraftBeforeSend(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: SendEstimateEmailOptions,
+): Promise<{ savedBeforeSend: SavedBeforeSend | null } | { refusal: string }> {
+  const none = { savedBeforeSend: null };
+  const row = await prisma.issuedEstimate.findUnique({
+    where: { id: estimateId },
+    select: {
+      draftId: true, serviceAddressId: true, customerEmail: true, signedAt: true, acceptedVia: true, signedChannel: true,
+      voidedAt: true, archivedAt: true, status: true, supersededBy: { select: { id: true } },
+    },
+  });
+  if (!row) return none;
+  // Signed or accepted by the office: never saved here (a signed estimate's revision is the office's
+  // deliberate act - the Revise button - and a send must never mint one). Void, archived and
+  // superseded are refused by the send in its own words, with nothing saved.
+  if (row.signedAt || row.acceptedVia || isOfficeAcceptance(row.signedChannel)) return none;
+  if (row.supersededBy || row.voidedAt || row.status === "void" || row.archivedAt) return none;
+
+  const { getDraftLifecycle, reviseEstimate, SAVE_OR_SEND_EVENT_TYPES, ALREADY_SAVED_REASON } = await import("./issuedEstimateService");
+  // What saves and sends this estimate had BEFORE we decided to save. If another request got to it
+  // in between, the save below stands down (skipIfEventsExceed) and this one sends what it finds.
+  const eventsSeen = await prisma.issuedEstimateEvent.count({ where: { estimateId, type: { in: SAVE_OR_SEND_EVENT_TYPES } } });
+  const lifecycle = await getDraftLifecycle(prisma, row.draftId);
+  if (lifecycle.issued?.estimateId !== estimateId || !lifecycle.hasUnsavedChanges) return none;
+
+  // An email that cannot go saves nothing: a revision here would kill the customer's link for no send.
+  const recipients = resolveRecipients({ toOverride: opts.toOverride, onFile: row.customerEmail, cc: opts.cc });
+  if (!recipients.ok) return { refusal: recipients.reason };
+  // Same for the report attachments: whether they can be produced is known before the save.
+  if (opts.attachHealthReport || opts.attachGeneratorReport) {
+    const inspection = await prisma.healthInspection.findFirst({
+      where: { propertyId: row.serviceAddressId },
+      orderBy: { inspectionDate: "desc" },
+      select: { loadCalcJson: true },
+    });
+    const noReport = reportAttachmentRefusal(inspection, opts);
+    if (noReport) return { refusal: noReport };
+  }
+
+  let saved: Awaited<ReturnType<typeof reviseEstimate>>;
+  try {
+    saved = await reviseEstimate(prisma, estimateId, {
+      actor: opts.sentBy,
+      // A customer's signature or an office acceptance that lands while the fresh row is being built
+      // must never be superseded by an unsigned copy that is then emailed. reviseEstimate checks this
+      // again under its own row lock, where the race is decided.
+      refuseSignedWith: "This estimate was signed or accepted while your changes were being saved - nothing was saved and no email was sent.",
+      skipIfEventsExceed: eventsSeen,
+    });
+  } catch (err) {
+    // Two saves of the same draft at the very same moment both build the next revision number, and
+    // the second one's insert is refused by the database (unique number + revision). That is the
+    // other request winning, not a fault: nothing was saved HERE and nothing is sent.
+    if ((err as { code?: string }).code === "P2002") {
+      return { refusal: "This estimate is being saved or sent by someone else right now - nothing was sent. Try again in a moment." };
+    }
+    throw err;
+  }
+  // Another save or send got there first: nothing to save here, send the estimate as it now stands.
+  if (!saved.ok && saved.reasons[0] === ALREADY_SAVED_REASON) return none;
+  // Any save refusal refuses the email in the save's own words. The stale version is never sent.
+  if (!saved.ok) return { refusal: saved.reasons.join(" ") };
+  return {
+    savedBeforeSend: {
+      estimateId: saved.estimateId,
+      number: saved.number,
+      revision: saved.revision,
+      replacedInPlace: saved.replacedInPlace === true,
+    },
+  };
+}
+
+const NO_ASSESSMENT_REFUSAL = "No electrical assessment is on file for this address — the report attachments can't be produced.";
+const NO_LOAD_CALC_REFUSAL = "This address's assessment has no load calculation — the generator sizing sheet can't be produced.";
+
+/**
+ * Why the ticked report attachments cannot be produced for this address's newest assessment, or
+ * null. The ONE place the two sentences live: asked before the save (an email that cannot go must
+ * not make a revision behind the customer's link) and again at the send.
+ */
+function reportAttachmentRefusal(
+  inspection: { loadCalcJson: unknown } | null,
+  opts: Pick<SendEstimateEmailOptions, "attachHealthReport" | "attachGeneratorReport">,
+): string | null {
+  if (!opts.attachHealthReport && !opts.attachGeneratorReport) return null;
+  if (!inspection) return NO_ASSESSMENT_REFUSAL;
+  if (opts.attachGeneratorReport && !inspection.loadCalcJson) return NO_LOAD_CALC_REFUSAL;
+  return null;
+}
+
+/** The send itself, for the estimate that is to be emailed: claim, build, send, stamp. */
+async function sendSavedEstimateEmail(
+  prisma: PrismaClient,
+  estimateId: string,
+  opts: SendEstimateEmailOptions,
 ): Promise<SendResult> {
   const first = await readForSend(prisma, estimateId);
   if (!first) return { ok: false, reason: "Estimate not found." };
@@ -779,7 +956,7 @@ function sendRefusal(row: NonNullable<Awaited<ReturnType<typeof readForSend>>>):
 async function sendClaimedEstimateEmail(
   prisma: PrismaClient,
   estimateId: string,
-  opts: Parameters<typeof sendEstimateEmail>[2],
+  opts: SendEstimateEmailOptions,
   { to, cc }: { to: string; cc: string[] },
   claim: { id: string; handedToProvider: boolean },
 ): Promise<SendResult> {
@@ -842,9 +1019,9 @@ async function sendClaimedEstimateEmail(
       orderBy: { inspectionDate: "desc" },
       select: { id: true, loadCalcJson: true },
     });
-    if (!inspection) {
-      return notSent("No electrical assessment is on file for this address — the report attachments can't be produced.");
-    }
+    // The same two refusals saveDraftBeforeSend asks BEFORE it saves (one helper, one wording).
+    const noReport = reportAttachmentRefusal(inspection, opts);
+    if (noReport || !inspection) return notSent(noReport ?? NO_ASSESSMENT_REFUSAL);
     if (opts.attachHealthReport) {
       const report = await generateHealthReport(inspection.id);
       docAttachments.push({
@@ -854,9 +1031,6 @@ async function sendClaimedEstimateEmail(
       });
     }
     if (opts.attachGeneratorReport) {
-      if (!inspection.loadCalcJson) {
-        return notSent("This address's assessment has no load calculation — the generator sizing sheet can't be produced.");
-      }
       const report = await generateGeneratorReport(inspection.id);
       docAttachments.push({
         filename: `generator-sizing-data-sheet-${est.number}.pdf`,
@@ -924,7 +1098,7 @@ async function sendClaimedEstimateEmail(
     console.warn("[IssuedEstimate] bounce flag not cleared:", err);
   });
 
-  return { ok: true, to, cc };
+  return { ok: true, to, cc, estimateId: est.id, number: est.number, revision: est.revision };
 }
 
 /**

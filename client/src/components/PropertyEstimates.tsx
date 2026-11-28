@@ -204,6 +204,21 @@ export function PropertyEstimates({
                 >
                   View
                 </button>
+                {/*
+                  Kyle, 2026-11-27 (debug report on a signed estimate): "She signed but all I get is the open and
+                  view. I cannot get to a place to process payment." A signed, live estimate's card opens the
+                  SAME invoice drawer and Take payment card as the estimate drawer's button - one tool, a second
+                  door where Kyle is standing. A change order pays on its root invoice (D1, EstimateDrawer).
+                */}
+                {e.signedAt && e.status !== "void" && e.status !== "lost" && (
+                  <OpenDrawerButton
+                    kind="invoice"
+                    id={e.changeOrderForId ?? e.id}
+                    onOpen={drawers.open}
+                    label="Invoice & payment"
+                    className="btn btn-primary flex-1 text-sm"
+                  />
+                )}
                 {unfinished && (
                   <button
                     type="button"

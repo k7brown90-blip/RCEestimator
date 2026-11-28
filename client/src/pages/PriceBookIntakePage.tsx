@@ -3041,7 +3041,19 @@ function IssueAndSendPanel(props: { draftId: string; accountId: string | null; s
                       },
                       { kind: "message", label: "Message" },
                     ],
-                    onSent: refresh,
+                    // "Email the customer" saves unsaved edits first (Kyle, 2026-11-27: "email sends what is on
+                    // screen"). Updated in place, the panel's own line says "Saved your changes and emailed ...".
+                    // A NEW revision re-points this card, and the card's detail is not loaded yet, so the panel
+                    // is unmounted and its line goes with it: THIS panel (it outlives the re-point) shows the
+                    // sentence - or, when the draft was saved and the email then did not go, the refusal.
+                    onSent: (sent) => {
+                      if (sent?.savedFirst && sent.estimateId && sent.estimateId !== est.id) {
+                        if (sent.failed) { setNotice(null); setReasons(sent.message ? [sent.message] : []); }
+                        else { setReasons([]); setNotice(sent.message ?? null); }
+                        setSelectedId(sent.estimateId);
+                      }
+                      refresh();
+                    },
                   }}
                 />
               </div>

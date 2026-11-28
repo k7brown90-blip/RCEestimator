@@ -26,7 +26,7 @@ import type { CatalogSection, FieldCatalogPage, FieldCatalogRow, FieldCatalogSna
 import type { PhonePriceSheetResponse } from '../../../shared/fieldPriceSheet'
 import type { CompletionEntryBody, CompletionLinesResponse, CompletionLineView } from '../../../shared/jobCompletion'
 import type { EstimatePhoto } from '../../../shared/estimatePhotos'
-import { estimateEmailRequest, type EstimateEmailChoices } from '../../../shared/estimateEmail'
+import { estimateEmailRequest, type EstimateEmailAnswer, type EstimateEmailChoices } from '../../../shared/estimateEmail'
 import type { FieldOpenQuestion, QuoteSuggestedLine, FieldWalkthroughRow, WalkthroughProposal } from '../../../shared/suggestedLines'
 import type { ApprovalCardView, ApprovalsResponse, TechBadge, TechThreadDetail, TechThreadsResponse } from '../../../shared/hub/views'
 import { toPushV2 } from '../domain/v2Types'
@@ -1685,11 +1685,15 @@ export async function emailPaymentRequest(
  * estimate the same way it already sends the assessment and diagnostic reports: the server resolves
  * the customer's address and composes the email (`sendEstimateEmail`, the same function the CRM's
  * send button calls) — nothing here carries the estimate's signing token.
+ *
+ * "Email sends what is on screen" (Kyle, 2026-11-27): if the quote has been edited since it was issued,
+ * the server SAVES it first (what "Save changes to the estimate" does) and emails the result, so the
+ * answer can name a NEW revision (`estimateId`, `savedFirst`) - the caller re-reads the quote.
  */
 export async function emailEstimateToCustomer(
   estimateId: string,
   opts: Partial<EstimateEmailChoices> = {},
-): Promise<{ to: string }> {
+): Promise<EstimateEmailAnswer> {
   // The same choices the office's Email estimate panel offers (Phase 4, 2026-10-08, one estimating
   // system): an address, a note, the Health Record report, the Generator Sizing sheet, the
   // Synchrony financing line (on unless switched off) and photos. The body is built by the SAME

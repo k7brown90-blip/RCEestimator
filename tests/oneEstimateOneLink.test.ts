@@ -534,7 +534,10 @@ describe("(g) a save while the estimate email is being sent is a revision, never
   it("the provider is still working on the message when 'Save changes to the estimate' is pressed", async () => {
     const { draftId, estimateId, number } = await issuedOnce("send-in-flight");
     const before = await snapshot(estimateId);
-    await editDraft(draftId);
+    // The draft is edited AFTER the send has started, not before (Kyle, 2026-11-27, "email sends what is on
+    // screen", plan Part 5): an email now SAVES the draft's unsaved edits first, so editing before the send
+    // would make the send itself save in place and the email would carry the new figures. This test is
+    // about the OTHER writer - a save that arrives while the message is with the provider.
 
     // The provider takes the message and does not answer until the save is done.
     let providerHasIt!: () => void;
@@ -545,6 +548,7 @@ describe("(g) a save while the estimate email is being sent is a revision, never
 
     const send = sendEstimateEmail(prisma, estimateId, { sentBy: "human:test" });
     await handed;
+    await editDraft(draftId);
     // Mid-send: no sentAt, no EmailDelivery row - and it is already NOT unseen.
     expect((await snapshot(estimateId)).sentAt).toBeNull();
     expect(await prisma.emailDelivery.count({ where: { issuedEstimateId: estimateId } })).toBe(0);

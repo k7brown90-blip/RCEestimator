@@ -213,7 +213,10 @@ beforeAll(async () => {
     data: { customerId, name: `${RUN} House`, addressLine1: "1 Range Ct", city: "Smyrna", state: "TN", postalCode: "37167" },
   });
   propertyId = property.id;
-  draftId = (await prisma.priceBookDraftEstimate.create({ data: { title: `${RUN} draft`, supplierId: "HD" } })).id;
+  // "finalized" = the draft as issued, nothing edited since. These estimates are written straight onto the
+  // draft (none came from it), and an email now SAVES a draft that has unsaved edits first (Kyle, 2026-11-27,
+  // "email sends what is on screen") - a synthetic estimate has nothing to save, so the fixture says so.
+  draftId = (await prisma.priceBookDraftEstimate.create({ data: { title: `${RUN} draft`, supplierId: "HD", status: "finalized" } })).id;
 });
 
 afterAll(async () => {

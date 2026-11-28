@@ -39,7 +39,7 @@
 import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { CustomerEmailInput, ReceiptReportOption } from "../lib/api";
+import type { CustomerEmailInput, EmailSentInfo, ReceiptReportOption } from "../lib/api";
 import type { EmailDeliveryRow } from "../lib/types";
 import { maskEmail, money, shortDate } from "../lib/utils";
 import { CcChips, SendToPicker } from "./SendToPicker";
@@ -48,6 +48,7 @@ import { refreshHub } from "../lib/hubQueries";
 import { useSession } from "../lib/session";
 import { ESTIMATE_EMAIL_DEFAULTS, estimateEmailExtras, estimateEmailRequest } from "../../../shared/estimateEmail";
 import { COMPLETION_REPORT_ID } from "../../../shared/jobCompletionLimits";
+import { savedAndEmailedOutcome } from "../../../shared/draftLifecycle";
 
 const STATUS_TONE: Record<string, string> = {
   sent: "text-rce-muted",
@@ -93,8 +94,13 @@ export interface EmailRecord {
    * (payment-info `email.reports`). An unavailable one is shown greyed with its `blockedReason`.
    */
   reports?: ReceiptReportOption[];
-  /** Called after any send that went out - the host refreshes whatever it shows. */
-  onSent?: () => void;
+  /**
+   * Called after any send that went out - the host refreshes whatever it shows. An estimate email
+   * that SAVED the draft first (Kyle, 2026-11-27: "email sends what is on screen") may have made a
+   * new revision, so it hears which estimate the email was for and re-points at `estimateId`. Also
+   * called, with the same fields, when the draft was saved and the email then did not go.
+   */
+  onSent?: (sent?: EmailSentInfo) => void;
   /** Offer photos from just these addresses (the Property page: this property's). Default: every address on the account. */
   photoProperties?: Array<{ id: string; name: string; addressLine1: string; city: string }>;
 }
@@ -277,12 +283,12 @@ export function SendEmailPanel({
     }
   };
 
-  const finish = () => {
+  const finish = (sent?: EmailSentInfo) => {
     void queryClient.invalidateQueries({ queryKey: ["email-deliveries"] });
     // The record's Conversation timeline lists this email too (an AI admin's shows there as sent by "AI admin").
     refreshHub(queryClient);
     for (const key of REFRESH_KEYS) void queryClient.invalidateQueries({ queryKey: key });
-    record?.onSent?.();
+    record?.onSent?.(sent);
   };
 
   const send = useMutation({
@@ -303,6 +309,7 @@ export function SendEmailPanel({
     },
     onSuccess: ({ message, sent }) => {
       setError(null);
+      let sentInfo: EmailSentInfo | undefined;
       if (message) {
         setSubject("");
         setBody("");
@@ -323,14 +330,27 @@ export function SendEmailPanel({
           review: "Review request emailed to",
           estimate: `Estimate ${recordNumber ?? ""} emailed to`,
         };
-        setNotice(`${(words[sent.kind] ?? "Emailed to").replace("  ", " ")} ${everyone}${sent.kind === "invoice" || sent.kind === "deposit" ? owed : ""}.`);
+        // An estimate email that saved the draft first says so, with the existing wording after it.
+        const outcome =
+          sent.kind === "estimate" && sent.savedFirst
+            ? savedAndEmailedOutcome({ number: sent.number ?? recordNumber ?? "", revision: sent.revision ?? 1, replacedInPlace: sent.replacedInPlace }, everyone)
+            : `${(words[sent.kind] ?? "Emailed to").replace("  ", " ")} ${everyone}${sent.kind === "invoice" || sent.kind === "deposit" ? owed : ""}.`;
+        setNotice(outcome);
+        sentInfo = { ...sent, message: outcome };
         setNote("");
         setPhotoIds([]);
         setReportPick(null);
       }
-      finish();
+      finish(sentInfo);
     },
-    onError: (err) => { setNotice(null); setError((err as Error).message); },
+    onError: (err) => {
+      setNotice(null);
+      setError((err as Error).message);
+      // The draft was saved and the email then did not go: the estimate on the host's screen may now
+      // be another row. The refusal already says so in words; the host re-points here.
+      const saved = (err as { body?: { saved?: { estimateId: string; number: string; revision: number; replacedInPlace: boolean } } }).body?.saved;
+      if (saved) finish({ ...saved, savedFirst: true, failed: true, message: (err as Error).message });
+    },
   });
 
   // "Last sent" for the chosen kind - and the honest warning that a second invoice send is a reminder.

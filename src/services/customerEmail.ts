@@ -33,7 +33,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { customerEmailBaseSchema } from "./emailCc";
-import { estimateEmailBodySchema, publicBaseUrl, sendEstimateEmailFromBody, sendInvoiceEmail } from "./issuedEstimateSend";
+import { estimateEmailBodySchema, publicBaseUrl, sendEstimateEmailFromBody, sendInvoiceEmail, type SavedBeforeSend } from "./issuedEstimateSend";
 import { sendDepositRequestEmail, sendReceiptEmail } from "./paymentReceipts";
 import { receiptReportIdsSchema } from "../../shared/jobCompletion";
 import { sendFinancingEmail } from "./financingEmail";
@@ -57,8 +57,15 @@ export type CustomerEmailRequest = z.infer<typeof customerEmailRequestSchema>;
 export type CustomerEmailKind = CustomerEmailRequest["kind"];
 
 export type CustomerEmailResult =
-  | { ok: true; kind: CustomerEmailKind; to: string; cc: string[]; amount?: number; reminder?: boolean }
-  | { ok: false; reason: string };
+  | {
+      ok: true; kind: CustomerEmailKind; to: string; cc: string[]; amount?: number; reminder?: boolean;
+      /**
+       * estimate only - the estimate the email was FOR. It is not the one asked about when the send
+       * saved the draft first and that made a revision (savedFirst; replacedInPlace says which kind of save).
+       */
+      estimateId?: string; number?: string; revision?: number; savedFirst?: true; replacedInPlace?: boolean;
+    }
+  | { ok: false; reason: string; /** estimate only - the send saved the draft, then the email did not go. */ saved?: SavedBeforeSend };
 
 export async function sendCustomerEmailRequest(
   prisma: PrismaClient,
@@ -115,7 +122,15 @@ export async function sendCustomerEmailRequest(
       const { kind: _kind, estimateId: id, ...rest } = body;
       void _kind;
       const r = await sendEstimateEmailFromBody(prisma, id, rest, sentBy);
-      return r.ok ? { ok: true, kind: "estimate", to: r.to, cc: r.cc } : r;
+      return r.ok
+        ? {
+            ok: true, kind: "estimate", to: r.to, cc: r.cc,
+            // Only when the send saved the draft first: an ordinary send's answer is exactly what it always was.
+            ...(r.savedFirst
+              ? { estimateId: r.estimateId, number: r.number, revision: r.revision, savedFirst: true as const, replacedInPlace: r.replacedInPlace === true }
+              : {}),
+          }
+        : r;
     }
     case "review": {
       const r = await sendReviewRequestEmail(prisma, body.visitId, {

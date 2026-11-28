@@ -1040,6 +1040,8 @@ export function QuoteScreen({ visitId, propertyId, customerName, draftId: fixedD
         reviseReason={lifecycle?.reviseReason ?? (signatureQueued ? WAITING_FOR_SIGNATURE_EDIT : null)}
         unpriced={unpriced}
         emailEstimate={(estimateId, choices) => emailEstimateToCustomer(estimateId, { ...choices, photoIds })}
+        // The email saved the quote first and may have made a new revision: re-read the quote (Kyle, 2026-11-27).
+        onEmailSavedFirst={() => { if (draftId) void refresh(draftId).catch(() => undefined) }}
         emailFinancing={emailFinancing}
         photoCount={photoIds.length}
         offlineReason={offline ? OFFLINE_EMAIL_REASON : null}

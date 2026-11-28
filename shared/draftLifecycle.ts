@@ -153,6 +153,22 @@ export function savedOutcome(saved: { number: string; revision: number; replaced
     : `Changes saved to ${saved.number} (revision ${saved.revision}). The customer's old link no longer opens — send the new one.`;
 }
 
+/**
+ * What an email that SAVED the draft first did, for the line a screen shows after it (Kyle,
+ * 2026-11-27: "email sends what is on screen"). The server's send result carries `savedFirst`,
+ * the number, the revision and `replacedInPlace`; `to` is the recipients as the screen words them.
+ * The same sentence in the CRM's "Email the customer" panel and on the phone. Never claims a
+ * revision that was not made.
+ */
+export function savedAndEmailedOutcome(
+  sent: { number: string; revision: number; replacedInPlace?: boolean },
+  to: string,
+): string {
+  return sent.replacedInPlace
+    ? `Saved your changes and emailed estimate ${sent.number} to ${to}. It was updated where it was: same number, same customer link, no new revision.`
+    : `Saved your changes and emailed estimate ${sent.number} (revision ${sent.revision}) to ${to}. The customer's earlier link no longer opens - this email carries the new one.`;
+}
+
 /** Why "Save changes to the estimate" is greyed when nothing on the draft has changed since it was issued. */
 export function nothingChangedReason(issued: Pick<DraftLifecycleIssued, "number" | "revision">): string {
   return (

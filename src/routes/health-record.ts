@@ -1923,10 +1923,19 @@ healthRecordTechRouter.post("/issued-estimates/:id/email", asyncHandler(async (r
   const photoVisitIds = await jobChainOfVisits([est.visitId, est.jobVisitId]);
   const result = await sendEstimateEmailFromBody(prisma, est.id, req.body, `tech:${req.technician!.id}`, { photoVisitIds });
   if (!result.ok) {
-    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason } });
+    // saved: the send saved the draft first and the email then did not go (email sends what is on screen).
+    res.status(409).json({ success: false, error: { code: "not_sent", message: result.reason, ...(result.saved ? { saved: result.saved } : {}) } });
     return;
   }
-  res.json({ success: true, data: { to: result.to } });
+  // An ordinary send answers { to } and nothing else. A send that SAVED the draft first also names the
+  // estimate the email was for - not the one pressed on when the save made a revision (savedFirst). Never
+  // the token: the phone follows the id (PUNCHLIST B4).
+  res.json({
+    success: true,
+    data: result.savedFirst
+      ? { to: result.to, estimateId: result.estimateId, number: result.number, revision: result.revision, savedFirst: true, replacedInPlace: result.replacedInPlace === true }
+      : { to: result.to },
+  });
 }));
 
 /**

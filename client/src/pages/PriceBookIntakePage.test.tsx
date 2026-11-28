@@ -854,3 +854,53 @@ describe("PriceBookIntakePage - Back to account", () => {
     expect(screen.queryByRole("link", { name: /Back to account/ })).toBeNull();
   });
 });
+
+/*
+  EMAIL SENDS WHAT IS ON SCREEN (Kyle, 2026-11-27), review fix. On Estimate Intake the card follows the
+  new revision an email made, and the card's detail is not loaded yet, so the email panel under it is
+  unmounted - taking its own "Saved your changes and emailed ..." line (and the refusal of a send that
+  saved and then did not go) with it. The line has to be on screen once the card shows the new revision.
+  Click path: Estimate Intake -> Review -> Email the customer -> Send estimate NNNN to <address>.
+*/
+describe("PriceBookIntakePage - an email that saved the draft as a new revision", () => {
+  const rev2 = () => issued({ id: "est-2", revision: 2 });
+  function mockRevisions() {
+    mockPage(issued({ sentAt: "2026-09-29T12:00:00.000Z", sentTo: "tony@example.com" }));
+    vi.spyOn(api, "pbIssuedDetail").mockImplementation(async (id: string) => ({
+      estimate: id === "est-2" ? rev2() : issued({ sentAt: "2026-09-29T12:00:00.000Z", sentTo: "tony@example.com" }),
+      customerLink: "https://example.test/e/tok",
+      accountProperties: [{ id: "prop-1", name: "Tony Hoover House", addressLine1: "1 Main St", city: "Smyrna" }],
+    }) as never);
+  }
+  const press = async () => {
+    renderWithProviders(<PriceBookIntakePage />, { route: ROUTE });
+    fireEvent.click(await screen.findByRole("button", { name: "Email the customer" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Send estimate 2026-1098/ }));
+  };
+  const saved = { estimateId: "est-2", number: "2026-1098", revision: 2, replacedInPlace: false };
+
+  it("shows 'Saved your changes and emailed ...' once the card is on the new revision", async () => {
+    mockRevisions();
+    vi.spyOn(api, "sendCustomerEmail").mockResolvedValue({ sent: true, kind: "estimate", to: "tony@example.com", cc: [], ...saved, savedFirst: true });
+
+    await press();
+
+    await waitFor(() => expect(api.pbIssuedDetail).toHaveBeenCalledWith("est-2"));
+    await waitFor(() => expect(screen.getAllByText(/^Saved your changes and emailed estimate 2026-1098 \(revision 2\) to tony@example\.com\./)).toHaveLength(1));
+    // The card now shows revision 2.
+    expect(await screen.findByText("2026-1098 rev 2")).toBeInTheDocument();
+  });
+
+  it("keeps the refusal of a send that saved and then did not go", async () => {
+    mockRevisions();
+    vi.spyOn(api, "sendCustomerEmail").mockRejectedValue(Object.assign(
+      new Error("Your changes were saved to estimate 2026-1098 (revision 2), but the email was not sent: The email could not be sent."),
+      { body: { sent: false, saved } },
+    ));
+
+    await press();
+
+    await waitFor(() => expect(api.pbIssuedDetail).toHaveBeenCalledWith("est-2"));
+    await waitFor(() => expect(screen.getAllByText(/Your changes were saved to estimate 2026-1098 \(revision 2\), but the email was not sent/)).toHaveLength(1));
+  });
+});

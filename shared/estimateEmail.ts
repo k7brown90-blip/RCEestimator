@@ -51,6 +51,22 @@ export const ESTIMATE_EMAIL_DEFAULTS: EstimateEmailChoices = {
   includeFinancingLink: true,
 };
 
+/**
+ * What the field's estimate-email route answers (the CRM's POST /customer-emails carries the same
+ * fields). The send SAVES the draft first when it has unsaved edits (Kyle, 2026-11-27: "email sends
+ * what is on screen"), and that can make a new revision, so the answer says which estimate the
+ * email was FOR: the screen follows `estimateId`. `savedFirst` is present only when a save happened;
+ * `replacedInPlace` says it kept the same row and customer link. Never the token.
+ */
+export interface EstimateEmailAnswer {
+  to: string;
+  estimateId?: string;
+  number?: string;
+  revision?: number;
+  savedFirst?: boolean;
+  replacedInPlace?: boolean;
+}
+
 /** The request body for the estimate-email routes (CRM `/issued-estimates/:id/send`, field `/health-record/issued-estimates/:id/email`). */
 export interface EstimateEmailRequest {
   to?: string | null;

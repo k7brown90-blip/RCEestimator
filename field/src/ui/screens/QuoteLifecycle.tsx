@@ -20,8 +20,8 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import type { DraftLifecycle } from '../../../../shared/draftLifecycle'
-import { SAVE_CHANGES_LABEL, nothingChangedReason, saveOutcome } from '../../../../shared/draftLifecycle'
-import { ESTIMATE_EMAIL_DEFAULTS, type EstimateEmailChoices } from '../../../../shared/estimateEmail'
+import { SAVE_CHANGES_LABEL, nothingChangedReason, saveOutcome, savedAndEmailedOutcome } from '../../../../shared/draftLifecycle'
+import { ESTIMATE_EMAIL_DEFAULTS, type EstimateEmailAnswer, type EstimateEmailChoices } from '../../../../shared/estimateEmail'
 import { OFFLINE_CHANGE_ORDER_REASON } from './QuoteOffline'
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -306,14 +306,22 @@ export function EmailFinancingButton(props: {
 export function EmailEstimateButton(props: {
   estimateId: string
   /** Called with the choices made above the button; the caller adds the ticked photos (the Quote screen owns those). */
-  send: (estimateId: string, choices: Partial<EstimateEmailChoices>) => Promise<{ to: string }>
+  send: (estimateId: string, choices: Partial<EstimateEmailChoices>) => Promise<EstimateEmailAnswer>
   blockedReason?: string | null
   /** How many photos are ticked to ride the email (Phase 2 unit E) - said on the button, so nothing goes unseen. */
   photoCount?: number
+  /**
+   * The email SAVED the quote first (Kyle, 2026-11-27: "email sends what is on screen"), which can
+   * make a new revision: the host re-reads the quote so this button points at the estimate that was
+   * emailed. Also called when the quote was saved and the email then did not go.
+   */
+  onSavedFirst?: () => void
 }) {
-  const { estimateId, send, blockedReason = null, photoCount = 0 } = props
+  const { estimateId, send, blockedReason = null, photoCount = 0, onSavedFirst } = props
   const [sending, setSending] = useState(false)
   const [sentTo, setSentTo] = useState<string | null>(null)
+  // The sentence after a send that saved first ("Saved your changes and emailed estimate ... "), else null.
+  const [savedLine, setSavedLine] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // The office's Email estimate panel, on the phone (Phase 4, 2026-10-08): the same boxes with the
   // same words and the same defaults (shared/estimateEmail.ts) - the financing line ticked, the two
@@ -368,10 +376,21 @@ export function EmailEstimateButton(props: {
         disabled={sending || blockedReason !== null}
         title={blockedReason ?? undefined}
         onClick={() => {
-          setSending(true); setError(null); setSentTo(null)
+          setSending(true); setError(null); setSentTo(null); setSavedLine(null)
           send(estimateId, { to, message, attachHealthReport, attachGeneratorReport, includeFinancingLink })
-            .then((r) => setSentTo(r.to))
-            .catch((err) => setError(errText(err)))
+            .then((r) => {
+              setSentTo(r.to)
+              if (r.savedFirst) {
+                setSavedLine(savedAndEmailedOutcome({ number: r.number ?? '', revision: r.revision ?? 1, replacedInPlace: r.replacedInPlace }, r.to))
+                onSavedFirst?.()
+              }
+            })
+            .catch((err) => {
+              setError(errText(err))
+              // The quote was saved and the email then did not go (the refusal says so in words): the quote may be a new revision now.
+              const saved = (err as { body?: { error?: { saved?: unknown } } }).body?.error?.saved
+              if (saved) onSavedFirst?.()
+            })
             .finally(() => setSending(false))
         }}
         className="w-full rounded-lg border border-slate-600 p-3 text-sm text-slate-200 disabled:opacity-40"
@@ -386,7 +405,7 @@ export function EmailEstimateButton(props: {
       {blockedReason && <p className="text-[11px] text-amber-200">{blockedReason}</p>}
       {sentTo && (
         <p className="rounded bg-emerald-950/50 p-2 text-xs text-emerald-200">
-          It&apos;s gone to {sentTo} — tell the customer to check their inbox.
+          {savedLine ?? `It's gone to ${sentTo}`} — tell the customer to check their inbox.
         </p>
       )}
       {error && (
@@ -431,7 +450,9 @@ export function IssuedEstimatePanel(props: {
   reviseReason: string | null
   /** Lines that froze at $0 on the LAST issue from this screen — a warning worth repeating once. */
   unpriced: string[]
-  emailEstimate: (estimateId: string, choices: Partial<EstimateEmailChoices>) => Promise<{ to: string }>
+  emailEstimate: (estimateId: string, choices: Partial<EstimateEmailChoices>) => Promise<EstimateEmailAnswer>
+  /** The email saved the quote first (see EmailEstimateButton.onSavedFirst): re-read the quote. */
+  onEmailSavedFirst?: () => void
   /** "Email the financing link" (Phase 4): the Synchrony link on its own, sendable before the customer signs. */
   emailFinancing: (estimateId: string) => Promise<{ to: string }>
   /** How many photos are ticked to ride the email (Phase 2 unit E) - said on the button, so nothing goes unseen. */
@@ -463,7 +484,7 @@ export function IssuedEstimatePanel(props: {
   offlineReason?: string | null
   children?: ReactNode
 }) {
-  const { issued, reviseReason, unpriced, emailEstimate, emailFinancing, photoCount = 0, onEdit, onBack, backLabel = 'Job site', onRaiseChangeOrder, onShowCustomer, showCustomerReason = null, offlineReason = null, children } = props
+  const { issued, reviseReason, unpriced, emailEstimate, onEmailSavedFirst, emailFinancing, photoCount = 0, onEdit, onBack, backLabel = 'Job site', onRaiseChangeOrder, onShowCustomer, showCustomerReason = null, offlineReason = null, children } = props
   const [coBusy, setCoBusy] = useState(false)
   const [coError, setCoError] = useState<string | null>(null)
   const lost = issued.status === 'lost'
@@ -550,6 +571,7 @@ export function IssuedEstimatePanel(props: {
         send={emailEstimate}
         blockedReason={offlineReason ?? emailBlockedReason(issued)}
         photoCount={photoCount}
+        onSavedFirst={onEmailSavedFirst}
       />
       {/* Beside the estimate email, not behind the signature (Kyle, 2026-10-08). */}
       <EmailFinancingButton
